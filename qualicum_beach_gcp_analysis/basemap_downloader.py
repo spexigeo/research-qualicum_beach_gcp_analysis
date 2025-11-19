@@ -148,6 +148,12 @@ def download_basemap(
     """
     min_lat, min_lon, max_lat, max_lon = bbox
     
+    # Validate bounding box
+    if min_lat >= max_lat:
+        raise ValueError(f"Invalid bounding box: min_lat ({min_lat}) must be less than max_lat ({max_lat})")
+    if min_lon >= max_lon:
+        raise ValueError(f"Invalid bounding box: min_lon ({min_lon}) must be less than max_lon ({max_lon})")
+    
     if zoom is None:
         zoom = calculate_zoom_level(bbox, target_resolution=target_resolution)
     
@@ -204,10 +210,31 @@ def download_basemap(
     right_pixel = min(stitched.width, right_pixel)
     bottom_pixel = min(stitched.height, bottom_pixel)
     
+    # Ensure valid crop rectangle
+    if right_pixel <= left_pixel:
+        right_pixel = left_pixel + 1
+        if right_pixel > stitched.width:
+            left_pixel = stitched.width - 1
+            right_pixel = stitched.width
+    if bottom_pixel <= top_pixel:
+        bottom_pixel = top_pixel + 1
+        if bottom_pixel > stitched.height:
+            top_pixel = stitched.height - 1
+            bottom_pixel = stitched.height
+    
     cropped = stitched.crop((left_pixel, top_pixel, right_pixel, bottom_pixel))
     
     # Save as GeoTIFF
     width, height = cropped.size
+    
+    # Validate dimensions
+    if width == 0 or height == 0:
+        raise ValueError(f"Invalid cropped image dimensions: {width}x{height}. "
+                        f"This may indicate an invalid bounding box or tile calculation issue. "
+                        f"Bbox: ({min_lat}, {min_lon}, {max_lat}, {max_lon}), "
+                        f"Crop coords: ({left_pixel}, {top_pixel}, {right_pixel}, {bottom_pixel}), "
+                        f"Stitched size: {stitched.width}x{stitched.height}")
+    
     transform = from_bounds(min_lon, min_lat, max_lon, max_lat, width, height)
     
     array = np.array(cropped)

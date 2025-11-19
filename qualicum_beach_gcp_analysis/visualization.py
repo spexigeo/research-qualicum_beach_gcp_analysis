@@ -121,5 +121,16 @@ def calculate_gcp_bbox(gcps: List[Dict], padding: float = 0.01) -> Tuple[float, 
     min_lon = min(lons) - padding
     max_lon = max(lons) + padding
     
+    # Ensure minimum size (avoid zero-size bbox)
+    if max_lat - min_lat < 0.0001:
+        center_lat = (min_lat + max_lat) / 2
+        min_lat = center_lat - 0.0001
+        max_lat = center_lat + 0.0001
+    
+    if max_lon - min_lon < 0.0001:
+        center_lon = (min_lon + max_lon) / 2
+        min_lon = center_lon - 0.0001
+        max_lon = center_lon + 0.0001
+    
     return (min_lat, min_lon, max_lat, max_lon)
 
