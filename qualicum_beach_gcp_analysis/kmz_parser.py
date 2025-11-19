@@ -36,7 +36,10 @@ def parse_kmz_file(kmz_path: str) -> List[Dict]:
             
             if not kml_files:
                 print(f"Warning: No KML file found in KMZ: {kmz_path}")
+                print(f"Files in KMZ: {kmz.namelist()}")
                 return gcps
+            
+            print(f"Found {len(kml_files)} KML file(s) in KMZ")
             
             # Parse the first KML file (usually there's only one)
             kml_content = kmz.read(kml_files[0])
@@ -44,20 +47,77 @@ def parse_kmz_file(kmz_path: str) -> List[Dict]:
             # Parse XML
             root = ET.fromstring(kml_content)
             
-            # Define namespaces (KML uses namespaces)
+            # Try to detect namespaces from the root element
+            # Some KML files use different namespace URIs
+            detected_namespaces = {}
+            if root.tag.startswith('{'):
+                # Extract namespace from root tag
+                ns_uri = root.tag[1:root.tag.index('}')]
+                detected_namespaces['kml'] = ns_uri
+            
+            # Define common namespaces (KML uses namespaces)
             namespaces = {
                 'kml': 'http://www.opengis.net/kml/2.2',
                 'gx': 'http://www.google.com/kml/ext/2.2'
             }
             
-            # Find all Placemark elements (these contain the GCPs)
-            placemarks = root.findall('.//kml:Placemark', namespaces)
-            if not placemarks:
-                # Try without namespace (some KML files don't use namespaces)
-                placemarks = root.findall('.//Placemark')
-                namespaces = {}
+            # Update with detected namespace if found
+            if detected_namespaces:
+                namespaces.update(detected_namespaces)
             
-            print(f"Found {len(placemarks)} placemarks in KMZ file")
+            # Try multiple namespace variations
+            placemarks = []
+            namespace_used = None
+            
+            # Try with detected/default namespace
+            if namespaces.get('kml'):
+                placemarks = root.findall('.//{http://www.opengis.net/kml/2.2}Placemark')
+                if placemarks:
+                    namespace_used = 'http://www.opengis.net/kml/2.2'
+                    namespaces = {'kml': namespace_used}
+            
+            # Try with detected namespace if different
+            if not placemarks and detected_namespaces.get('kml'):
+                ns_uri = detected_namespaces['kml']
+                placemarks = root.findall(f'.//{{{ns_uri}}}Placemark')
+                if placemarks:
+                    namespace_used = ns_uri
+                    namespaces = {'kml': ns_uri}
+            
+            # Try with namespace prefix
+            if not placemarks:
+                placemarks = root.findall('.//kml:Placemark', namespaces)
+                if placemarks:
+                    namespace_used = 'with_prefix'
+            
+            # Try without namespace (some KML files don't use namespaces)
+            if not placemarks:
+                placemarks = root.findall('.//Placemark')
+                if placemarks:
+                    namespace_used = 'no_namespace'
+                    namespaces = {}
+            
+            # Try finding any element with "Placemark" in the tag name
+            if not placemarks:
+                placemarks = [elem for elem in root.iter() if 'Placemark' in elem.tag]
+                if placemarks:
+                    namespace_used = 'iter_search'
+                    # Try to extract namespace
+                    if placemarks[0].tag.startswith('{'):
+                        ns_uri = placemarks[0].tag[1:placemarks[0].tag.index('}')]
+                        namespaces = {'kml': ns_uri}
+                    else:
+                        namespaces = {}
+            
+            print(f"Found {len(placemarks)} placemarks in KMZ file (namespace: {namespace_used})")
+            
+            # Debug: print root element info if no placemarks found
+            if not placemarks:
+                print(f"Debug: Root element tag: {root.tag}")
+                print(f"Debug: Root element children: {[child.tag for child in root]}")
+                # Try to find any elements that might contain coordinates
+                all_elements = [elem.tag for elem in root.iter()]
+                print(f"Debug: All element tags (first 20): {all_elements[:20]}")
             
             for idx, placemark in enumerate(placemarks):
                 gcp = _parse_placemark(placemark, namespaces, idx)
@@ -104,17 +164,51 @@ def _parse_placemark(placemark: ET.Element, namespaces: Dict[str, str], default_
         coords = None
         
         # Try Point element first (most common for GCPs)
-        point = placemark.find('kml:Point', namespaces) if namespaces else placemark.find('Point')
+        # Try with namespace URI directly
+        point = None
+        if namespaces.get('kml'):
+            ns_uri = namespaces['kml']
+            point = placemark.find(f'{{{ns_uri}}}Point')
+            if point is None:
+                point = placemark.find('kml:Point', namespaces)
+        else:
+            point = placemark.find('Point')
+        
         if point is not None:
-            coord_elem = point.find('kml:coordinates', namespaces) if namespaces else point.find('coordinates')
+            # Try to find coordinates element
+            coord_elem = None
+            if namespaces.get('kml'):
+                ns_uri = namespaces['kml']
+                coord_elem = point.find(f'{{{ns_uri}}}coordinates')
+                if coord_elem is None:
+                    coord_elem = point.find('kml:coordinates', namespaces)
+            else:
+                coord_elem = point.find('coordinates')
+            
             if coord_elem is not None and coord_elem.text:
                 coords = _parse_coordinates(coord_elem.text)
         
         # If no Point, try LineString or Polygon (less common for GCPs)
         if coords is None:
-            linestring = placemark.find('kml:LineString', namespaces) if namespaces else placemark.find('LineString')
+            linestring = None
+            if namespaces.get('kml'):
+                ns_uri = namespaces['kml']
+                linestring = placemark.find(f'{{{ns_uri}}}LineString')
+                if linestring is None:
+                    linestring = placemark.find('kml:LineString', namespaces)
+            else:
+                linestring = placemark.find('LineString')
+            
             if linestring is not None:
-                coord_elem = linestring.find('kml:coordinates', namespaces) if namespaces else linestring.find('coordinates')
+                coord_elem = None
+                if namespaces.get('kml'):
+                    ns_uri = namespaces['kml']
+                    coord_elem = linestring.find(f'{{{ns_uri}}}coordinates')
+                    if coord_elem is None:
+                        coord_elem = linestring.find('kml:coordinates', namespaces)
+                else:
+                    coord_elem = linestring.find('coordinates')
+                
                 if coord_elem is not None and coord_elem.text:
                     # Take first coordinate from LineString
                     coords_list = _parse_coordinate_list(coord_elem.text)
