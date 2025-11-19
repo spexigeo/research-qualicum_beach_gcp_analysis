@@ -56,28 +56,32 @@ def parse_kmz_file(kmz_path: str) -> List[Dict]:
                 # This is a workaround for KML files with unbound prefixes
                 pass  # We'll handle this in the parsing step
             
-            # Parse XML - use iterparse or fromstring with namespace handling
+            # Parse XML - handle namespace issues
+            root = None
             try:
                 root = ET.fromstring(kml_content)
             except ET.ParseError as parse_err:
                 # If there's an unbound prefix error, try to fix it
                 if 'unbound prefix' in str(parse_err).lower():
-                    # Try parsing with a namespace fix
-                    # Replace common unbound prefixes with proper namespace URIs
+                    print("Attempting to fix namespace issues...")
                     kml_text_fixed = kml_text
                     
-                    # Try a simpler approach: remove namespace prefixes and use default namespace
-                    # Replace common prefixes like <kml:Document> with <Document>
-                    kml_text_fixed = re.sub(r'<kml:(\w+)', r'<\1', kml_text_fixed)
-                    kml_text_fixed = re.sub(r'</kml:(\w+)', r'</\1', kml_text_fixed)
+                    # Remove unbound namespace prefixes from attributes (e.g., xsi:schemaLocation)
+                    # This is often the issue - attributes with undeclared prefixes
+                    kml_text_fixed = re.sub(r'\s+[a-zA-Z0-9_]+:([a-zA-Z0-9_]+)="[^"]*"', r'', kml_text_fixed)
                     
-                    # Add default namespace if missing
-                    if 'xmlns=' not in kml_text_fixed[:500]:
-                        # Find the root tag and add namespace
-                        root_tag_match = re.search(r'<(\w+)', kml_text_fixed[:200])
+                    # Also remove namespace prefixes from tags
+                    kml_text_fixed = re.sub(r'<([a-zA-Z0-9_]+):([a-zA-Z0-9_]+)', r'<\2', kml_text_fixed)
+                    kml_text_fixed = re.sub(r'</([a-zA-Z0-9_]+):([a-zA-Z0-9_]+)', r'</\2', kml_text_fixed)
+                    
+                    # Remove problematic xmlns declarations that might reference undeclared namespaces
+                    kml_text_fixed = re.sub(r'xmlns:[a-zA-Z0-9_]+="[^"]*"', '', kml_text_fixed)
+                    
+                    # Ensure default namespace exists
+                    if 'xmlns="' not in kml_text_fixed[:500]:
+                        root_tag_match = re.search(r'<([a-zA-Z0-9_]+)', kml_text_fixed[:200])
                         if root_tag_match:
                             root_tag = root_tag_match.group(1)
-                            # Add namespace declaration to root element
                             kml_text_fixed = kml_text_fixed.replace(
                                 f'<{root_tag}',
                                 f'<{root_tag} xmlns="http://www.opengis.net/kml/2.2"',
@@ -85,14 +89,39 @@ def parse_kmz_file(kmz_path: str) -> List[Dict]:
                             )
                     
                     try:
-                        kml_content = kml_text_fixed.encode('utf-8')
-                        root = ET.fromstring(kml_content)
-                        print("Fixed namespace issues in KML file")
+                        kml_content_fixed = kml_text_fixed.encode('utf-8')
+                        root = ET.fromstring(kml_content_fixed)
+                        print("✓ Fixed namespace issues in KML file")
                     except Exception as e2:
-                        print(f"Could not fix namespace issues: {e2}")
-                        raise parse_err
+                        print(f"First fix attempt failed: {e2}")
+                        # More aggressive: remove ALL attributes with colons (namespace prefixes)
+                        kml_text_aggressive = re.sub(r'\s+[^=]*:[^=]*="[^"]*"', '', kml_text)
+                        kml_text_aggressive = re.sub(r'<([a-zA-Z0-9_]+):([a-zA-Z0-9_]+)', r'<\2', kml_text_aggressive)
+                        kml_text_aggressive = re.sub(r'</([a-zA-Z0-9_]+):([a-zA-Z0-9_]+)', r'</\2', kml_text_aggressive)
+                        
+                        # Ensure default namespace
+                        root_tag_match = re.search(r'<([a-zA-Z0-9_]+)', kml_text_aggressive[:200])
+                        if root_tag_match:
+                            root_tag = root_tag_match.group(1)
+                            if 'xmlns="' not in kml_text_aggressive[:500]:
+                                kml_text_aggressive = kml_text_aggressive.replace(
+                                    f'<{root_tag}',
+                                    f'<{root_tag} xmlns="http://www.opengis.net/kml/2.2"',
+                                    1
+                                )
+                        
+                        try:
+                            kml_content_aggressive = kml_text_aggressive.encode('utf-8')
+                            root = ET.fromstring(kml_content_aggressive)
+                            print("✓ Fixed namespace issues using aggressive approach")
+                        except Exception as e3:
+                            print(f"All namespace fix attempts failed. Last error: {e3}")
+                            raise parse_err
                 else:
                     raise parse_err
+            
+            if root is None:
+                raise ValueError("Failed to parse KML file")
             
             # Try to detect namespaces from the root element
             # Some KML files use different namespace URIs
