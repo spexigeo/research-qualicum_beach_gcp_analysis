@@ -264,7 +264,72 @@ def _parse_placemark(placemark: ET.Element, namespaces: Dict[str, str], default_
             if coord_elem is not None and coord_elem.text:
                 coords = _parse_coordinates(coord_elem.text)
         
-        # If no Point, try LineString or Polygon (less common for GCPs)
+        # If no Point, try Polygon (common for area definitions - extract centroid)
+        if coords is None:
+            polygon = None
+            if namespaces.get('kml'):
+                ns_uri = namespaces['kml']
+                polygon = placemark.find(f'{{{ns_uri}}}Polygon')
+                if polygon is None:
+                    # Check inside MultiGeometry
+                    multigeom = placemark.find(f'{{{ns_uri}}}MultiGeometry')
+                    if multigeom is not None:
+                        polygon = multigeom.find(f'{{{ns_uri}}}Polygon')
+                if polygon is None:
+                    polygon = placemark.find('kml:Polygon', namespaces)
+            else:
+                polygon = placemark.find('Polygon')
+                if polygon is None:
+                    multigeom = placemark.find('MultiGeometry')
+                    if multigeom is not None:
+                        polygon = multigeom.find('Polygon')
+            
+            if polygon is not None:
+                # Find coordinates in Polygon > outerBoundaryIs > LinearRing > coordinates
+                outer = None
+                if namespaces.get('kml'):
+                    ns_uri = namespaces['kml']
+                    outer = polygon.find(f'{{{ns_uri}}}outerBoundaryIs')
+                    if outer is None:
+                        outer = polygon.find('kml:outerBoundaryIs', namespaces)
+                else:
+                    outer = polygon.find('outerBoundaryIs')
+                
+                if outer is not None:
+                    linear = None
+                    if namespaces.get('kml'):
+                        ns_uri = namespaces['kml']
+                        linear = outer.find(f'{{{ns_uri}}}LinearRing')
+                        if linear is None:
+                            linear = outer.find('kml:LinearRing', namespaces)
+                    else:
+                        linear = outer.find('LinearRing')
+                    
+                    if linear is not None:
+                        coord_elem = None
+                        if namespaces.get('kml'):
+                            ns_uri = namespaces['kml']
+                            coord_elem = linear.find(f'{{{ns_uri}}}coordinates')
+                            if coord_elem is None:
+                                coord_elem = linear.find('kml:coordinates', namespaces)
+                        else:
+                            coord_elem = linear.find('coordinates')
+                        
+                        if coord_elem is not None and coord_elem.text:
+                            # Calculate centroid from polygon coordinates
+                            coords_list = _parse_coordinate_list(coord_elem.text)
+                            if coords_list:
+                                # Use first coordinate as representative point
+                                # (or calculate actual centroid if needed)
+                                coords = coords_list[0]
+                                # Optionally calculate centroid:
+                                if len(coords_list) > 1:
+                                    avg_lon = sum(c[0] for c in coords_list) / len(coords_list)
+                                    avg_lat = sum(c[1] for c in coords_list) / len(coords_list)
+                                    avg_elev = sum(c[2] for c in coords_list if c[2] is not None) / len([c for c in coords_list if c[2] is not None]) if any(c[2] is not None for c in coords_list) else None
+                                    coords = (avg_lon, avg_lat, avg_elev)
+        
+        # If still no coords, try LineString
         if coords is None:
             linestring = None
             if namespaces.get('kml'):
