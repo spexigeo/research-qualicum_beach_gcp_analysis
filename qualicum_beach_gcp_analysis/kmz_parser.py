@@ -9,6 +9,7 @@ import zipfile
 import xml.etree.ElementTree as ET
 from typing import List, Dict, Tuple, Optional
 import os
+import re
 from pathlib import Path
 
 
@@ -44,8 +45,54 @@ def parse_kmz_file(kmz_path: str) -> List[Dict]:
             # Parse the first KML file (usually there's only one)
             kml_content = kmz.read(kml_files[0])
             
-            # Parse XML
-            root = ET.fromstring(kml_content)
+            # Preprocess KML content to handle namespace issues
+            # Some KML files have unbound prefixes - try to fix them
+            kml_text = kml_content.decode('utf-8', errors='ignore')
+            
+            # Try to register common namespaces if they're missing
+            # Check if the root element has namespace declarations
+            if 'xmlns' not in kml_text[:500] or 'xmlns:kml' not in kml_text[:500]:
+                # Try to add namespace declarations if missing
+                # This is a workaround for KML files with unbound prefixes
+                pass  # We'll handle this in the parsing step
+            
+            # Parse XML - use iterparse or fromstring with namespace handling
+            try:
+                root = ET.fromstring(kml_content)
+            except ET.ParseError as parse_err:
+                # If there's an unbound prefix error, try to fix it
+                if 'unbound prefix' in str(parse_err).lower():
+                    # Try parsing with a namespace fix
+                    # Replace common unbound prefixes with proper namespace URIs
+                    kml_text_fixed = kml_text
+                    
+                    # Try a simpler approach: remove namespace prefixes and use default namespace
+                    # Replace common prefixes like <kml:Document> with <Document>
+                    kml_text_fixed = re.sub(r'<kml:(\w+)', r'<\1', kml_text_fixed)
+                    kml_text_fixed = re.sub(r'</kml:(\w+)', r'</\1', kml_text_fixed)
+                    
+                    # Add default namespace if missing
+                    if 'xmlns=' not in kml_text_fixed[:500]:
+                        # Find the root tag and add namespace
+                        root_tag_match = re.search(r'<(\w+)', kml_text_fixed[:200])
+                        if root_tag_match:
+                            root_tag = root_tag_match.group(1)
+                            # Add namespace declaration to root element
+                            kml_text_fixed = kml_text_fixed.replace(
+                                f'<{root_tag}',
+                                f'<{root_tag} xmlns="http://www.opengis.net/kml/2.2"',
+                                1
+                            )
+                    
+                    try:
+                        kml_content = kml_text_fixed.encode('utf-8')
+                        root = ET.fromstring(kml_content)
+                        print("Fixed namespace issues in KML file")
+                    except Exception as e2:
+                        print(f"Could not fix namespace issues: {e2}")
+                        raise parse_err
+                else:
+                    raise parse_err
             
             # Try to detect namespaces from the root element
             # Some KML files use different namespace URIs
@@ -306,6 +353,61 @@ def _parse_coordinate_list(coord_string: str) -> List[Tuple[float, float, Option
         if parsed:
             coords.append(parsed)
     return coords
+
+
+def inspect_kmz_structure(kmz_path: str) -> None:
+    """
+    Inspect the structure of a KMZ file for debugging.
+    
+    Args:
+        kmz_path: Path to KMZ file
+    """
+    if not os.path.exists(kmz_path):
+        print(f"KMZ file not found: {kmz_path}")
+        return
+    
+    try:
+        with zipfile.ZipFile(kmz_path, 'r') as kmz:
+            print(f"Files in KMZ archive:")
+            for f in kmz.namelist():
+                print(f"  - {f}")
+            
+            kml_files = [f for f in kmz.namelist() if f.endswith('.kml')]
+            if kml_files:
+                print(f"\nReading KML file: {kml_files[0]}")
+                kml_content = kmz.read(kml_files[0])
+                root = ET.fromstring(kml_content)
+                
+                print(f"Root element: {root.tag}")
+                print(f"Root attributes: {root.attrib}")
+                print(f"\nDirect children:")
+                for child in root:
+                    print(f"  - {child.tag}: {child.attrib}")
+                    # Show first few grandchildren
+                    for grandchild in list(child)[:3]:
+                        print(f"    - {grandchild.tag}")
+                
+                # Try to find any coordinate-like elements
+                print(f"\nSearching for coordinate-like elements...")
+                coord_elements = []
+                for elem in root.iter():
+                    if 'coord' in elem.tag.lower() or 'point' in elem.tag.lower():
+                        coord_elements.append(elem.tag)
+                
+                if coord_elements:
+                    print(f"Found {len(coord_elements)} coordinate-like elements:")
+                    for tag in set(coord_elements[:10]):
+                        print(f"  - {tag}")
+                else:
+                    print("No coordinate-like elements found")
+                
+                # Print a sample of the KML content
+                print(f"\nFirst 500 characters of KML content:")
+                print(kml_content.decode('utf-8', errors='ignore')[:500])
+    except Exception as e:
+        print(f"Error inspecting KMZ file: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 def load_gcps_from_kmz(kmz_path: str) -> List[Dict]:
