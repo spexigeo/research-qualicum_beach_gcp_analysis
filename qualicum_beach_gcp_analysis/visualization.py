@@ -8,6 +8,13 @@ import rasterio
 from rasterio.plot import show
 from PIL import Image
 
+try:
+    import h3
+    H3_AVAILABLE = True
+except ImportError:
+    H3_AVAILABLE = False
+    h3 = None
+
 
 def visualize_gcps_on_basemap(
     gcps: List[Dict],
@@ -191,4 +198,76 @@ def calculate_gcp_bbox(gcps: List[Dict], padding: float = 0.01) -> Tuple[float, 
         max_lon = center_lon + 0.0001
     
     return (min_lat, min_lon, max_lat, max_lon)
+
+
+def bbox_to_h3_cells(
+    bbox: Tuple[float, float, float, float],
+    resolution: int = 12
+) -> List[str]:
+    """
+    Calculate H3 cells that overlap a bounding box.
+    
+    Args:
+        bbox: Bounding box as (min_lat, min_lon, max_lat, max_lon)
+        resolution: H3 resolution level (0-15, default 12)
+        
+    Returns:
+        List of H3 cell identifiers that overlap the bounding box
+    """
+    if not H3_AVAILABLE:
+        raise ImportError("h3 library is not installed. Install it with: pip install h3")
+    
+    min_lat, min_lon, max_lat, max_lon = bbox
+    
+    # For H3 v4, try using H3Shape for polygon_to_cells
+    try:
+        from h3 import H3Shape
+        
+        # Create GeoJSON polygon from bounding box
+        # GeoJSON uses [lon, lat] format
+        geojson_polygon = {
+            "type": "Polygon",
+            "coordinates": [[
+                [min_lon, max_lat],  # Top-left
+                [max_lon, max_lat],  # Top-right
+                [max_lon, min_lat],  # Bottom-right
+                [min_lon, min_lat],  # Bottom-left
+                [min_lon, max_lat],  # Close polygon
+            ]]
+        }
+        
+        # Create H3Shape from GeoJSON
+        shape = H3Shape.from_geojson(geojson_polygon)
+        
+        # Get all H3 cells that intersect with the polygon
+        h3_cells = h3.polygon_to_cells(shape, resolution)
+        
+        # Convert to sorted list
+        return sorted(list(h3_cells))
+        
+    except (ImportError, AttributeError, Exception) as e:
+        # Fallback method: sample points in the bbox and get their cells
+        # This is less precise but works without H3Shape
+        cells_set = set()
+        
+        # Sample points across the bbox
+        # Use adaptive sampling based on bbox size
+        lat_range = max_lat - min_lat
+        lon_range = max_lon - min_lon
+        
+        # Calculate number of samples needed (aim for ~10-15 samples per degree)
+        num_lat_samples = max(5, int(lat_range * 10))
+        num_lon_samples = max(5, int(lon_range * 10))
+        
+        lat_step = lat_range / num_lat_samples if lat_range > 0 else 0.001
+        lon_step = lon_range / num_lon_samples if lon_range > 0 else 0.001
+        
+        for i in range(num_lat_samples + 1):
+            for j in range(num_lon_samples + 1):
+                lat = min_lat + i * lat_step
+                lon = min_lon + j * lon_step
+                cell = h3.latlng_to_cell(lat, lon, resolution)
+                cells_set.add(cell)
+        
+        return sorted(list(cells_set))
 
