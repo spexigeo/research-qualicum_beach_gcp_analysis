@@ -83,14 +83,14 @@ def download_tile(xtile: int, ytile: int, zoom: int, source: str = "openstreetma
 
 
 def calculate_zoom_level(bbox: Tuple[float, float, float, float], 
-                         max_tiles: int = 16, 
+                         max_tiles: int = 64, 
                          target_resolution: Optional[float] = None) -> int:
     """
     Calculate appropriate zoom level based on bounding box size or target resolution.
     
     Args:
         bbox: Bounding box as (min_lat, min_lon, max_lat, max_lon)
-        max_tiles: Maximum number of tiles to download
+        max_tiles: Maximum number of tiles to download (default 64 for better quality)
         target_resolution: Target resolution in meters per pixel (optional)
         
     Returns:
@@ -115,7 +115,32 @@ def calculate_zoom_level(bbox: Tuple[float, float, float, float],
     lat_range = max_lat - min_lat
     lon_range = max_lon - min_lon
     
-    for zoom in range(1, 20):
+    # Calculate approximate area in square degrees
+    area_deg2 = lat_range * lon_range
+    
+    # For small areas, use higher zoom levels
+    # Area thresholds (rough estimates):
+    # - Very small (< 0.001 deg²): zoom 15-17
+    # - Small (0.001-0.01 deg²): zoom 13-15
+    # - Medium (0.01-0.1 deg²): zoom 11-13
+    # - Large (> 0.1 deg²): zoom 9-11
+    
+    if area_deg2 < 0.0001:
+        # Very small area - use high zoom
+        base_zoom = 16
+    elif area_deg2 < 0.001:
+        base_zoom = 15
+    elif area_deg2 < 0.01:
+        base_zoom = 13
+    elif area_deg2 < 0.1:
+        base_zoom = 11
+    else:
+        base_zoom = 9
+    
+    # Now check tile count and adjust if needed
+    for zoom in range(base_zoom, base_zoom - 5, -1):
+        if zoom < 1:
+            break
         xtile_min, ytile_min = deg2num(min_lat, min_lon, zoom)
         xtile_max, ytile_max = deg2num(max_lat, max_lon, zoom)
         
@@ -123,7 +148,8 @@ def calculate_zoom_level(bbox: Tuple[float, float, float, float],
         if num_tiles <= max_tiles:
             return zoom
     
-    return 18
+    # Fallback: use base zoom even if it exceeds max_tiles
+    return max(1, base_zoom)
 
 
 def download_basemap(
@@ -160,8 +186,15 @@ def download_basemap(
     print(f"Downloading basemap at zoom level {zoom}...")
     
     # Calculate tile range
-    xtile_min, ytile_min = deg2num(min_lat, min_lon, zoom)
-    xtile_max, ytile_max = deg2num(max_lat, max_lon, zoom)
+    # Note: Y tiles increase southward, so min_lat gives max Y tile and vice versa
+    xtile_min, ytile_max = deg2num(min_lat, min_lon, zoom)  # min_lat, min_lon -> top-left
+    xtile_max, ytile_min = deg2num(max_lat, max_lon, zoom)  # max_lat, max_lon -> bottom-right
+    
+    # Ensure correct ordering
+    if xtile_min > xtile_max:
+        xtile_min, xtile_max = xtile_max, xtile_min
+    if ytile_min > ytile_max:
+        ytile_min, ytile_max = ytile_max, ytile_min
     
     print(f"Tile range: X [{xtile_min}, {xtile_max}], Y [{ytile_min}, {ytile_max}]")
     
