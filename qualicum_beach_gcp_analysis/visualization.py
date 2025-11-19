@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 import rasterio
 from rasterio.plot import show
+from PIL import Image
 
 
 def visualize_gcps_on_basemap(
@@ -51,13 +52,19 @@ def visualize_gcps_on_basemap(
         # Transpose for matplotlib (height, width, channels)
         basemap_display = basemap_rgb.transpose(1, 2, 0)
     
-    # Create figure
-    fig, ax = plt.subplots(figsize=(14, 10))
+    # Create figure with larger size for better quality
+    fig, ax = plt.subplots(figsize=(16, 12))
     
-    # Display basemap
+    # Display basemap with proper extent
     extent = [basemap_bounds.left, basemap_bounds.right, 
               basemap_bounds.bottom, basemap_bounds.top]
-    ax.imshow(basemap_display, extent=extent, origin='upper')
+    
+    # Ensure basemap is displayed correctly
+    ax.imshow(basemap_display, extent=extent, origin='upper', interpolation='bilinear')
+    
+    # Set axis limits to match basemap bounds
+    ax.set_xlim(basemap_bounds.left, basemap_bounds.right)
+    ax.set_ylim(basemap_bounds.bottom, basemap_bounds.top)
     
     # Extract GCP coordinates
     gcp_lons = [gcp['lon'] for gcp in gcps]
@@ -91,12 +98,63 @@ def visualize_gcps_on_basemap(
     plt.tight_layout()
     
     if output_path:
-        plt.savefig(output_path, dpi=150, bbox_inches='tight')
+        # Save with high resolution
+        plt.savefig(output_path, dpi=200, bbox_inches='tight', facecolor='white')
         print(f"Visualization saved to {output_path}")
+        print(f"  Basemap bounds: {basemap_bounds}")
+        print(f"  Image size: {basemap_display.shape[1]}x{basemap_display.shape[0]} pixels")
     else:
         plt.show()
     
     plt.close()
+
+
+def export_basemap_as_png(
+    basemap_path: str,
+    output_path: str,
+    dpi: int = 200
+) -> str:
+    """
+    Export basemap GeoTIFF as PNG image.
+    
+    Args:
+        basemap_path: Path to basemap GeoTIFF file
+        output_path: Path to save PNG file
+        dpi: Resolution for PNG export
+        
+    Returns:
+        Path to saved PNG file
+    """
+    # Load basemap
+    with rasterio.open(basemap_path) as src:
+        basemap_data = src.read()
+        basemap_bounds = src.bounds
+        
+        # Convert to RGB if needed
+        if basemap_data.shape[0] == 1:
+            # Grayscale, convert to RGB
+            basemap_rgb = np.stack([basemap_data[0]] * 3, axis=0)
+        elif basemap_data.shape[0] == 3:
+            basemap_rgb = basemap_data
+        else:
+            # Take first 3 bands
+            basemap_rgb = basemap_data[:3]
+        
+        # Normalize to 0-255 range
+        basemap_rgb = np.clip(basemap_rgb, 0, 255).astype(np.uint8)
+        
+        # Transpose for PIL (height, width, channels)
+        basemap_display = basemap_rgb.transpose(1, 2, 0)
+    
+    # Convert to PIL Image and save
+    basemap_image = Image.fromarray(basemap_display)
+    basemap_image.save(output_path, 'PNG', dpi=(dpi, dpi))
+    
+    print(f"Basemap exported to PNG: {output_path}")
+    print(f"  Image size: {basemap_display.shape[1]}x{basemap_display.shape[0]} pixels")
+    print(f"  Bounds: {basemap_bounds}")
+    
+    return output_path
 
 
 def calculate_gcp_bbox(gcps: List[Dict], padding: float = 0.01) -> Tuple[float, float, float, float]:
