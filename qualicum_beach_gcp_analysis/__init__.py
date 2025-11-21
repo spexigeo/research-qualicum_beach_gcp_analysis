@@ -18,4 +18,3 @@ __all__ = [
     'export_to_metashape_csv',
     'export_to_metashape_xml',
 ]
-

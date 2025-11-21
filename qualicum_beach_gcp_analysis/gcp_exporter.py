@@ -124,4 +124,3 @@ def export_to_metashape(
         return export_to_metashape_xml(gcps, output_path)
     else:
         return export_to_metashape_csv(gcps, output_path)
-

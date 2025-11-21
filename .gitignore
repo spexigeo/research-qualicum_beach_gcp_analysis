@@ -35,13 +35,21 @@ ENV/
 # Jupyter
 .ipynb_checkpoints/
 
-# Outputs
+# Outputs - All generated files
 outputs/
 *.tif
 *.tiff
 *.png
 *.jpg
 *.jpeg
+*.txt
+*.xml
+
+# MetaShape export files (specific patterns)
+*_metashape.txt
+*_metashape.xml
+*_gcps_metashape.txt
+*_gcps_metashape.xml
 
 # Data files (large files)
 *.kmz
@@ -51,4 +59,3 @@ outputs/
 # OS
 .DS_Store
 Thumbs.db
-
