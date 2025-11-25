@@ -7,11 +7,40 @@ against reference basemaps.
 
 import json
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 from datetime import datetime
 import logging
+import numpy as np
 
 logger = logging.getLogger(__name__)
+
+
+def convert_to_json_serializable(obj: Any) -> Any:
+    """
+    Convert numpy types and other non-JSON-serializable objects to native Python types.
+    
+    Args:
+        obj: Object to convert
+        
+    Returns:
+        JSON-serializable version of the object
+    """
+    if isinstance(obj, (np.integer, np.int64, np.int32, np.int16, np.int8)):
+        return int(obj)
+    elif isinstance(obj, (np.floating, np.float64, np.float32, np.float16)):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, np.bool_):
+        return bool(obj)
+    elif isinstance(obj, dict):
+        return {key: convert_to_json_serializable(value) for key, value in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [convert_to_json_serializable(item) for item in obj]
+    elif isinstance(obj, Path):
+        return str(obj)
+    else:
+        return obj
 
 
 def generate_comparison_report(
@@ -99,6 +128,9 @@ def generate_comparison_report(
             }
         
         report['comparison'] = comparison
+    
+    # Convert numpy types to JSON-serializable types
+    report = convert_to_json_serializable(report)
     
     # Save JSON report
     with open(output_path, 'w') as f:
