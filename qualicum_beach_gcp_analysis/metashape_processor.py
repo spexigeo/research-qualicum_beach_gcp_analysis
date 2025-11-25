@@ -313,8 +313,10 @@ def process_orthomosaic(
                             # Try tab delimiter first (MetaShape CSV format), then comma
                             sample = f.read(1024)
                             f.seek(0)
-                            delimiter = '\t' if '\t' in sample else ','
-                            logger.info(f"  Using delimiter: {'tab' if delimiter == '\t' else 'comma'}")
+                            tab_char = '\t'
+                            delimiter = tab_char if tab_char in sample else ','
+                            delimiter_name = 'tab' if delimiter == tab_char else 'comma'
+                            logger.info(f"  Using delimiter: {delimiter_name}")
                             reader = csv.DictReader(f, delimiter=delimiter)
                             for row in reader:
                                 try:
