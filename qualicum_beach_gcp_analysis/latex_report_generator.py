@@ -44,10 +44,10 @@ def generate_latex_report(
     visualization_dir = Path(visualization_dir)
     
     # Generate LaTeX content
-    latex_content = generate_latex_content(report, visualization_dir)
+    latex_path = output_path.with_suffix('.tex')
+    latex_content = generate_latex_content(report, visualization_dir, latex_path)
     
     # Write LaTeX file
-    latex_path = output_path.with_suffix('.tex')
     with open(latex_path, 'w', encoding='utf-8') as f:
         f.write(latex_content)
     
@@ -63,7 +63,7 @@ def generate_latex_report(
         return latex_path
 
 
-def generate_latex_content(report: Dict, visualization_dir: Path) -> str:
+def generate_latex_content(report: Dict, visualization_dir: Path, latex_path: Path) -> str:
     """Generate LaTeX document content."""
     
     metadata = report.get('report_metadata', {})
@@ -237,11 +237,12 @@ Metric & Without GCPs & With GCPs \\
     
     # Side-by-side comparison
     if vis_files['comparison'].exists():
+        rel_path = vis_files['comparison'].relative_to(latex_path.parent)
         latex += r"""\subsection{Side-by-Side Comparison}
 
 \begin{figure}[H]
 \centering
-\includegraphics[width=\textwidth]{""" + str(vis_files['comparison'].relative_to(output_path.parent)) + r"""}
+\includegraphics[width=\textwidth]{""" + str(rel_path) + r"""}
 \caption{Comparison of orthomosaics with and without GCPs against the reference basemap.
 The improvement map (bottom right) shows where GCPs reduce errors (green) or increase them (red).}
 \label{fig:comparison}
@@ -251,11 +252,12 @@ The improvement map (bottom right) shows where GCPs reduce errors (green) or inc
     
     # Metrics summary
     if vis_files['metrics'].exists():
+        rel_path = vis_files['metrics'].relative_to(latex_path.parent)
         latex += r"""\subsection{Quality Metrics Summary}
 
 \begin{figure}[H]
 \centering
-\includegraphics[width=0.8\textwidth]{""" + str(vis_files['metrics'].relative_to(output_path.parent)) + r"""}
+\includegraphics[width=0.8\textwidth]{""" + str(rel_path) + r"""}
 \caption{Bar chart comparing quality metrics between orthomosaics with and without GCPs.}
 \label{fig:metrics}
 \end{figure}
@@ -264,19 +266,21 @@ The improvement map (bottom right) shows where GCPs reduce errors (green) or inc
     
     # Seamline comparisons
     if vis_files['seamlines_no_gcps'].exists() and vis_files['seamlines_with_gcps'].exists():
+        rel_path_no = vis_files['seamlines_no_gcps'].relative_to(latex_path.parent)
+        rel_path_with = vis_files['seamlines_with_gcps'].relative_to(latex_path.parent)
         latex += r"""\subsection{Seamline Detection}
 
 \begin{figure}[H]
 \centering
 \begin{subfigure}{0.48\textwidth}
 \centering
-\includegraphics[width=\textwidth]{""" + str(vis_files['seamlines_no_gcps'].relative_to(output_path.parent)) + r"""}
+\includegraphics[width=\textwidth]{""" + str(rel_path_no) + r"""}
 \caption{Without GCPs}
 \end{subfigure}
 \hfill
 \begin{subfigure}{0.48\textwidth}
 \centering
-\includegraphics[width=\textwidth]{""" + str(vis_files['seamlines_with_gcps'].relative_to(output_path.parent)) + r"""}
+\includegraphics[width=\textwidth]{""" + str(rel_path_with) + r"""}
 \caption{With GCPs}
 \end{subfigure}
 \caption{Seamline detection showing potential stitching artifacts. Red regions indicate
@@ -288,19 +292,21 @@ high-gradient areas that may represent seamlines or discontinuities.}
     
     # Error visualizations
     if vis_files['error_no_gcps'].exists() and vis_files['error_with_gcps'].exists():
+        rel_path_no = vis_files['error_no_gcps'].relative_to(latex_path.parent)
+        rel_path_with = vis_files['error_with_gcps'].relative_to(latex_path.parent)
         latex += r"""\subsection{Error Maps}
 
 \begin{figure}[H]
 \centering
 \begin{subfigure}{0.48\textwidth}
 \centering
-\includegraphics[width=\textwidth]{""" + str(vis_files['error_no_gcps'].relative_to(output_path.parent)) + r"""}
+\includegraphics[width=\textwidth]{""" + str(rel_path_no) + r"""}
 \caption{Without GCPs}
 \end{subfigure}
 \hfill
 \begin{subfigure}{0.48\textwidth}
 \centering
-\includegraphics[width=\textwidth]{""" + str(vis_files['error_with_gcps'].relative_to(output_path.parent)) + r"""}
+\includegraphics[width=\textwidth]{""" + str(rel_path_with) + r"""}
 \caption{With GCPs}
 \end{subfigure}
 \caption{Error maps showing absolute differences between orthomosaics and reference basemap.
