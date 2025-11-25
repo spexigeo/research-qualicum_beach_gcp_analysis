@@ -5,6 +5,11 @@ rasterio>=1.3.0
 requests>=2.31.0
 h3>=3.7.0
 boto3>=1.28.0
+opencv-python>=4.8.0
+scikit-image>=0.21.0
 
 # Note: Agisoft Metashape Python API must be installed separately
 # It is not available via pip. Install from: https://www.agisoft.com/downloads/installer/
+
+# Note: LaTeX (pdflatex) is required for PDF report generation
+# Install LaTeX distribution: MacTeX (macOS), TeX Live (Linux), MiKTeX (Windows)

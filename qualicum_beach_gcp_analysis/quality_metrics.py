@@ -10,10 +10,26 @@ import rasterio
 from rasterio.warp import calculate_default_transform, reproject, Resampling
 from rasterio.enums import Resampling as RasterioResampling
 from pathlib import Path
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, List
 import logging
 
 logger = logging.getLogger(__name__)
+
+# Try to import feature matching libraries
+try:
+    import cv2
+    CV2_AVAILABLE = True
+except ImportError:
+    CV2_AVAILABLE = False
+    logger.warning("OpenCV not available. Feature matching will be disabled. Install with: pip install opencv-python")
+
+try:
+    from skimage.feature import match_template
+    from skimage.registration import phase_cross_correlation
+    SKIMAGE_AVAILABLE = True
+except ImportError:
+    SKIMAGE_AVAILABLE = False
+    logger.warning("scikit-image not available. Some feature matching methods will be disabled. Install with: pip install scikit-image")
 
 
 def reproject_to_match(
@@ -287,6 +303,172 @@ def calculate_structural_similarity(
     return float(similarity)
 
 
+def compute_feature_matching_2d_error(
+    ortho_array: np.ndarray,
+    reference_array: np.ndarray,
+    method: str = 'sift'
+) -> Dict:
+    """
+    Compute 2D error measures using feature matching between orthomosaic and reference.
+    
+    This provides spatial error information (X, Y offsets) in addition to pixel-level errors.
+    
+    Args:
+        ortho_array: Orthomosaic array (grayscale or first band)
+        reference_array: Reference basemap array (grayscale or first band)
+        method: Feature matching method ('sift', 'orb', 'template', or 'phase')
+        
+    Returns:
+        Dictionary with 2D error metrics including:
+        - mean_offset_x, mean_offset_y: Average pixel offset
+        - rmse_2d: 2D RMSE in pixels
+        - num_matches: Number of matched features
+        - match_confidence: Confidence score
+    """
+    # Convert to grayscale if needed
+    if len(ortho_array.shape) == 3:
+        ortho_gray = np.mean(ortho_array, axis=0) if ortho_array.shape[0] < ortho_array.shape[2] else np.mean(ortho_array, axis=2)
+    else:
+        ortho_gray = ortho_array
+    
+    if len(reference_array.shape) == 3:
+        ref_gray = np.mean(reference_array, axis=0) if reference_array.shape[0] < reference_array.shape[2] else np.mean(reference_array, axis=2)
+    else:
+        ref_gray = reference_array
+    
+    # Normalize to uint8 for feature matching
+    def normalize_to_uint8(arr):
+        arr_min, arr_max = arr.min(), arr.max()
+        if arr_max > arr_min:
+            normalized = ((arr - arr_min) / (arr_max - arr_min) * 255).astype(np.uint8)
+        else:
+            normalized = np.zeros_like(arr, dtype=np.uint8)
+        return normalized
+    
+    ortho_norm = normalize_to_uint8(ortho_gray)
+    ref_norm = normalize_to_uint8(ref_gray)
+    
+    errors_2d = {
+        'method': method,
+        'mean_offset_x': None,
+        'mean_offset_y': None,
+        'rmse_2d': None,
+        'num_matches': 0,
+        'match_confidence': 0.0,
+        'offsets': []
+    }
+    
+    if method in ['sift', 'orb'] and CV2_AVAILABLE:
+        # Use OpenCV feature matching
+        try:
+            if method == 'sift':
+                detector = cv2.SIFT_create()
+            else:  # orb
+                detector = cv2.ORB_create()
+            
+            # Detect keypoints and descriptors
+            kp1, des1 = detector.detectAndCompute(ortho_norm, None)
+            kp2, des2 = detector.detectAndCompute(ref_norm, None)
+            
+            if des1 is not None and des2 is not None and len(des1) > 0 and len(des2) > 0:
+                # Match features
+                if method == 'sift':
+                    matcher = cv2.BFMatcher()
+                    matches = matcher.knnMatch(des1, des2, k=2)
+                    # Apply Lowe's ratio test
+                    good_matches = []
+                    for match_pair in matches:
+                        if len(match_pair) == 2:
+                            m, n = match_pair
+                            if m.distance < 0.75 * n.distance:
+                                good_matches.append(m)
+                else:  # orb
+                    matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+                    good_matches = matcher.match(des1, des2)
+                    good_matches = sorted(good_matches, key=lambda x: x.distance)[:100]
+                
+                if len(good_matches) > 4:  # Need at least 4 matches
+                    # Extract matched points
+                    src_pts = np.float32([kp1[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+                    dst_pts = np.float32([kp2[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+                    
+                    # Calculate offsets
+                    offsets = dst_pts - src_pts
+                    offsets_flat = offsets.reshape(-1, 2)
+                    
+                    mean_offset_x = np.mean(offsets_flat[:, 0])
+                    mean_offset_y = np.mean(offsets_flat[:, 1])
+                    
+                    # Calculate 2D RMSE
+                    distances = np.sqrt(offsets_flat[:, 0]**2 + offsets_flat[:, 1]**2)
+                    rmse_2d = np.sqrt(np.mean(distances**2))
+                    
+                    # Confidence based on number of matches and consistency
+                    match_confidence = min(1.0, len(good_matches) / 50.0)  # Normalize to 0-1
+                    std_offset = np.std(distances)
+                    if std_offset > 0:
+                        match_confidence *= (1.0 / (1.0 + std_offset / 10.0))  # Penalize high variance
+                    
+                    errors_2d.update({
+                        'mean_offset_x': float(mean_offset_x),
+                        'mean_offset_y': float(mean_offset_y),
+                        'rmse_2d': float(rmse_2d),
+                        'num_matches': len(good_matches),
+                        'match_confidence': float(match_confidence),
+                        'offsets': offsets_flat.tolist()
+                    })
+                    
+                    logger.info(f"Feature matching ({method}): {len(good_matches)} matches, "
+                              f"offset=({mean_offset_x:.2f}, {mean_offset_y:.2f}) px, "
+                              f"RMSE_2D={rmse_2d:.2f} px")
+        except Exception as e:
+            logger.warning(f"Feature matching ({method}) failed: {e}")
+    
+    elif method == 'phase' and SKIMAGE_AVAILABLE:
+        # Use phase correlation (good for global shifts)
+        try:
+            shift, error, diffphase = phase_cross_correlation(ref_norm, ortho_norm)
+            errors_2d.update({
+                'mean_offset_x': float(shift[1]),  # Note: phase_cross_correlation returns (row, col)
+                'mean_offset_y': float(shift[0]),
+                'rmse_2d': float(np.sqrt(shift[0]**2 + shift[1]**2)),
+                'num_matches': 1,
+                'match_confidence': float(1.0 - min(1.0, error)),  # Lower error = higher confidence
+            })
+            logger.info(f"Phase correlation: shift=({shift[1]:.2f}, {shift[0]:.2f}) px, error={error:.4f}")
+        except Exception as e:
+            logger.warning(f"Phase correlation failed: {e}")
+    
+    elif method == 'template' and SKIMAGE_AVAILABLE:
+        # Template matching (slower but can find local matches)
+        try:
+            # Sample a template from the center of reference
+            h, w = ref_norm.shape
+            template_size = min(100, h//4, w//4)
+            template = ref_norm[h//2:h//2+template_size, w//2:w//2+template_size]
+            
+            # Find template in orthomosaic
+            result = match_template(ortho_norm, template)
+            ij = np.unravel_index(np.argmax(result), result.shape)
+            
+            # Calculate offset
+            offset_x = ij[1] - w//2
+            offset_y = ij[0] - h//2
+            
+            errors_2d.update({
+                'mean_offset_x': float(offset_x),
+                'mean_offset_y': float(offset_y),
+                'rmse_2d': float(np.sqrt(offset_x**2 + offset_y**2)),
+                'num_matches': 1,
+                'match_confidence': float(result[ij]),
+            })
+            logger.info(f"Template matching: offset=({offset_x:.2f}, {offset_y:.2f}) px")
+        except Exception as e:
+            logger.warning(f"Template matching failed: {e}")
+    
+    return errors_2d
+
+
 def compare_orthomosaic_to_basemap(
     ortho_path: Path,
     basemap_path: Path,
@@ -347,11 +529,37 @@ def compare_orthomosaic_to_basemap(
         # Calculate similarity
         similarity = calculate_structural_similarity(ortho_band, ref_band)
         
+        # Compute 2D error using feature matching (only for first band to avoid redundancy)
+        errors_2d = {}
+        if band_idx == 0:
+            # Try multiple methods, use the best one
+            methods_to_try = []
+            if CV2_AVAILABLE:
+                methods_to_try.extend(['sift', 'orb'])
+            if SKIMAGE_AVAILABLE:
+                methods_to_try.extend(['phase', 'template'])
+            
+            best_errors_2d = None
+            best_confidence = 0.0
+            
+            for method in methods_to_try:
+                try:
+                    errors = compute_feature_matching_2d_error(ortho_band, ref_band, method=method)
+                    if errors['match_confidence'] > best_confidence:
+                        best_confidence = errors['match_confidence']
+                        best_errors_2d = errors
+                except Exception as e:
+                    logger.debug(f"Feature matching method {method} failed: {e}")
+            
+            if best_errors_2d:
+                errors_2d = best_errors_2d
+        
         metrics['bands'][f'band_{band_idx+1}'] = {
             'rmse': float(rmse) if not np.isnan(rmse) else None,
             'mae': float(mae) if not np.isnan(mae) else None,
             'similarity': float(similarity),
-            'seamlines': seamline_stats
+            'seamlines': seamline_stats,
+            'errors_2d': errors_2d if errors_2d else {}
         }
     
     # Overall metrics (average across bands)
@@ -361,11 +569,25 @@ def compare_orthomosaic_to_basemap(
         avg_similarity = np.mean([b['similarity'] for b in metrics['bands'].values()])
         avg_seamline_pct = np.mean([b['seamlines']['seamline_percentage'] for b in metrics['bands'].values()])
         
+        # Get 2D error metrics from first band (if available)
+        errors_2d_overall = {}
+        first_band = list(metrics['bands'].values())[0]
+        if first_band.get('errors_2d') and first_band['errors_2d'].get('rmse_2d') is not None:
+            errors_2d_overall = {
+                'mean_offset_x_pixels': first_band['errors_2d'].get('mean_offset_x'),
+                'mean_offset_y_pixels': first_band['errors_2d'].get('mean_offset_y'),
+                'rmse_2d_pixels': first_band['errors_2d'].get('rmse_2d'),
+                'num_matches': first_band['errors_2d'].get('num_matches', 0),
+                'match_confidence': first_band['errors_2d'].get('match_confidence', 0.0),
+                'method': first_band['errors_2d'].get('method', 'unknown')
+            }
+        
         metrics['overall'] = {
             'rmse': float(avg_rmse) if not np.isnan(avg_rmse) else None,
             'mae': float(avg_mae) if not np.isnan(avg_mae) else None,
             'similarity': float(avg_similarity),
-            'seamline_percentage': float(avg_seamline_pct)
+            'seamline_percentage': float(avg_seamline_pct),
+            'errors_2d': errors_2d_overall
         }
     
     logger.info(f"Comparison complete. Overall RMSE: {metrics.get('overall', {}).get('rmse', 'N/A')}")
