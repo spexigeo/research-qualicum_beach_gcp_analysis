@@ -310,7 +310,12 @@ def process_orthomosaic(
                         import csv
                         markers_added = 0
                         with open(gcp_file, 'r', encoding='utf-8') as f:
-                            reader = csv.DictReader(f, delimiter='\t' if file_ext == '.txt' else ',')
+                            # Try tab delimiter first (MetaShape CSV format), then comma
+                            sample = f.read(1024)
+                            f.seek(0)
+                            delimiter = '\t' if '\t' in sample else ','
+                            logger.info(f"  Using delimiter: {'tab' if delimiter == '\t' else 'comma'}")
+                            reader = csv.DictReader(f, delimiter=delimiter)
                             for row in reader:
                                 try:
                                     marker = chunk.addMarker()
