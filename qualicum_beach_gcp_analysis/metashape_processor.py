@@ -295,8 +295,55 @@ def process_orthomosaic(
             if existing_markers == 0:
                 if gcp_file and gcp_file.exists():
                     logger.info(f"Loading GCPs from file: {gcp_file}")
-                    chunk.importMarkers(str(gcp_file))
-                    doc.save()
+                    
+                    # Check file extension to determine format
+                    file_ext = gcp_file.suffix.lower()
+                    
+                    if file_ext == '.xml':
+                        # MetaShape XML format - use importMarkers
+                        logger.info("  Detected XML format, using importMarkers")
+                        chunk.importMarkers(str(gcp_file))
+                        doc.save()
+                    elif file_ext == '.csv' or file_ext == '.txt':
+                        # CSV format - read and add markers manually
+                        logger.info("  Detected CSV format, reading and adding markers manually")
+                        import csv
+                        markers_added = 0
+                        with open(gcp_file, 'r', encoding='utf-8') as f:
+                            reader = csv.DictReader(f, delimiter='\t' if file_ext == '.txt' else ',')
+                            for row in reader:
+                                try:
+                                    marker = chunk.addMarker()
+                                    marker.label = row.get('Label', f"GCP_{markers_added+1}")
+                                    
+                                    # Parse coordinates
+                                    x = float(row.get('X', row.get('x', 0.0)))
+                                    y = float(row.get('Y', row.get('y', 0.0)))
+                                    z = float(row.get('Z', row.get('z', 0.0)))
+                                    
+                                    marker.reference.location = Metashape.Vector((x, y, z))
+                                    marker.reference.enabled = True
+                                    
+                                    # Parse accuracy
+                                    accuracy = float(row.get('Accuracy', row.get('accuracy', 1.0)))
+                                    marker.reference.accuracy = Metashape.Vector((accuracy, accuracy, accuracy))
+                                    
+                                    markers_added += 1
+                                except (ValueError, KeyError) as e:
+                                    logger.warning(f"  Skipping invalid marker row: {e}")
+                        
+                        logger.info(f"  Added {markers_added} markers from CSV file")
+                        doc.save()
+                    else:
+                        # Try to use importMarkers (might work for other formats)
+                        logger.info(f"  Unknown format ({file_ext}), attempting importMarkers")
+                        try:
+                            chunk.importMarkers(str(gcp_file))
+                            doc.save()
+                        except Exception as e:
+                            logger.error(f"  Failed to import markers: {e}")
+                            logger.error("  Please use XML or CSV format, or provide GCPs as a list")
+                            raise
                 elif gcps:
                     logger.info(f"Using {len(gcps)} GCPs from provided list")
                     # Add markers manually
