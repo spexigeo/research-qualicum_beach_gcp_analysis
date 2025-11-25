@@ -14,6 +14,13 @@ from typing import Dict, Optional, Tuple
 import rasterio
 import logging
 
+try:
+    from scipy.ndimage import zoom
+    SCIPY_AVAILABLE = True
+except ImportError:
+    SCIPY_AVAILABLE = False
+    logger.warning("scipy not available. Install with: pip install scipy")
+
 logger = logging.getLogger(__name__)
 
 
@@ -35,6 +42,11 @@ def create_error_visualization(
     Returns:
         Path to saved image
     """
+    # Resize ortho to match reference if shapes differ
+    if ortho_array.shape != reference_array.shape:
+        logger.info(f"Resizing ortho_array from {ortho_array.shape} to {reference_array.shape}")
+        ortho_array = _resize_to_match(reference_array.shape, ortho_array)
+    
     # Calculate difference
     diff = np.abs(ortho_array.astype(np.float32) - reference_array.astype(np.float32))
     
@@ -130,6 +142,45 @@ def create_seamline_visualization(
     return output_path
 
 
+def _resize_to_match(target_shape: Tuple[int, int], source_array: np.ndarray) -> np.ndarray:
+    """
+    Resize source array to match target shape using interpolation.
+    
+    Args:
+        target_shape: Target (height, width) shape
+        source_array: Source array to resize
+        
+    Returns:
+        Resized array
+    """
+    if source_array.shape == target_shape:
+        return source_array
+    
+    if SCIPY_AVAILABLE:
+        zoom_factors = (target_shape[0] / source_array.shape[0], 
+                       target_shape[1] / source_array.shape[1])
+        resized = zoom(source_array, zoom_factors, order=1)  # Bilinear interpolation
+    else:
+        # Fallback: use simple cropping/padding
+        # Crop or pad to match target shape
+        h, w = target_shape
+        sh, sw = source_array.shape
+        
+        if sh > h or sw > w:
+            # Crop to center
+            start_h = (sh - h) // 2
+            start_w = (sw - w) // 2
+            resized = source_array[start_h:start_h+h, start_w:start_w+w]
+        else:
+            # Pad with zeros
+            resized = np.zeros(target_shape, dtype=source_array.dtype)
+            start_h = (h - sh) // 2
+            start_w = (w - sw) // 2
+            resized[start_h:start_h+sh, start_w:start_w+sw] = source_array
+    
+    return resized
+
+
 def create_comparison_side_by_side(
     ortho_no_gcps: np.ndarray,
     ortho_with_gcps: np.ndarray,
@@ -150,6 +201,19 @@ def create_comparison_side_by_side(
     Returns:
         Path to saved image
     """
+    # Handle shape mismatches by resizing to smallest common size or reference size
+    # Use reference as the target size since it's typically smaller
+    target_shape = reference.shape
+    
+    # Resize orthomosaics to match reference if needed
+    if ortho_no_gcps.shape != target_shape:
+        logger.info(f"Resizing ortho_no_gcps from {ortho_no_gcps.shape} to {target_shape}")
+        ortho_no_gcps = _resize_to_match(target_shape, ortho_no_gcps)
+    
+    if ortho_with_gcps.shape != target_shape:
+        logger.info(f"Resizing ortho_with_gcps from {ortho_with_gcps.shape} to {target_shape}")
+        ortho_with_gcps = _resize_to_match(target_shape, ortho_with_gcps)
+    
     fig, axes = plt.subplots(2, 2, figsize=(12, 12))
     
     # Reference (top left)
