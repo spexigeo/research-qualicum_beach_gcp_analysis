@@ -92,6 +92,27 @@ def cleanup_previous_run(project_path: Path) -> bool:
         return False
 
 
+def check_processing_status(chunk) -> Dict[str, bool]:
+    """
+    Check which processing steps have been completed in a MetaShape chunk.
+    
+    Args:
+        chunk: MetaShape chunk object
+        
+    Returns:
+        Dictionary indicating which steps are complete
+    """
+    status = {
+        'photos_added': len(chunk.cameras) > 0,
+        'photos_matched': chunk.tie_points is not None and len(chunk.tie_points) > 0,
+        'cameras_aligned': len(chunk.cameras) > 0 and any(cam.transform for cam in chunk.cameras),
+        'depth_maps_built': chunk.depth_maps is not None and len(chunk.depth_maps) > 0,
+        'model_built': chunk.model is not None,
+        'orthomosaic_built': chunk.orthomosaic is not None
+    }
+    return status
+
+
 def process_orthomosaic(
     photos_dir: Path,
     output_path: Path,
@@ -99,7 +120,7 @@ def process_orthomosaic(
     gcps: Optional[List[Dict]] = None,
     gcp_file: Optional[Path] = None,
     product_id: str = "orthomosaic",
-    clean_intermediate_files: bool = True,
+    clean_intermediate_files: bool = False,
     photo_match_quality: int = PhotoMatchQuality.MediumQuality,
     depth_map_quality: int = DepthMapQuality.MediumQuality,
     tiepoint_limit: int = 10000,
@@ -137,11 +158,6 @@ def process_orthomosaic(
     output_path.mkdir(parents=True, exist_ok=True)
     project_path.parent.mkdir(parents=True, exist_ok=True)
     
-    # Cleanup if requested
-    if clean_intermediate_files:
-        logger.info("🧹 Cleaning up previous processing files...")
-        cleanup_previous_run(project_path)
-    
     # Compression settings (from main.py)
     compression = Metashape.ImageCompression()
     compression.tiff_compression = Metashape.ImageCompression.TiffCompressionNone
@@ -149,98 +165,164 @@ def process_orthomosaic(
     compression.tiff_overviews = True
     compression.tiff_tiled = True
     
-    # Initialize project
-    logger.info("🚀 Initializing Metashape project...")
-    doc = Metashape.Document()
-    doc.save(str(project_path))
-    chunk = doc.addChunk()
+    # Check if project exists and load it, or create new one
+    project_exists = project_path.exists()
     
-    # Add photos
-    logger.info(f"Adding photos from: {photos_dir}")
-    photos = find_image_files(photos_dir)
-    if not photos:
-        raise ValueError(f"No images found in {photos_dir}")
-    
-    logger.info(f"Found {len(photos)} images")
-    chunk.addPhotos(photos)
-    doc.save()
-    
-    # Add GCPs if requested
-    if use_gcps:
-        if gcp_file and gcp_file.exists():
-            logger.info(f"Loading GCPs from file: {gcp_file}")
-            chunk.importMarkers(str(gcp_file))
-            doc.save()
-        elif gcps:
-            logger.info(f"Using {len(gcps)} GCPs from provided list")
-            # Add markers manually
-            for gcp in gcps:
-                marker = chunk.addMarker()
-                marker.label = gcp.get('id', f"GCP_{gcps.index(gcp)+1}")
-                marker.reference.location = Metashape.Vector((
-                    gcp.get('lon', 0.0),
-                    gcp.get('lat', 0.0),
-                    gcp.get('z', 0.0)
-                ))
-                marker.reference.enabled = True
-                marker.reference.accuracy = Metashape.Vector((
-                    gcp.get('accuracy', 1.0),
-                    gcp.get('accuracy', 1.0),
-                    gcp.get('accuracy', 1.0)
-                ))
-            doc.save()
+    if project_exists and not clean_intermediate_files:
+        logger.info(f"📂 Loading existing project: {project_path}")
+        doc = Metashape.Document()
+        doc.open(str(project_path))
+        
+        # Use the first chunk (or create one if none exists)
+        if len(doc.chunks) > 0:
+            chunk = doc.chunks[0]
+            logger.info(f"  Found existing chunk with {len(chunk.cameras)} cameras")
         else:
-            logger.warning("use_gcps=True but no GCPs provided. Processing without GCPs.")
+            chunk = doc.addChunk()
+            logger.info("  No chunks found, created new chunk")
+    else:
+        # Cleanup if requested
+        if clean_intermediate_files and project_exists:
+            logger.info("🧹 Cleaning up previous processing files...")
+            cleanup_previous_run(project_path)
+        
+        # Initialize new project
+        logger.info("🚀 Creating new Metashape project...")
+        doc = Metashape.Document()
+        doc.save(str(project_path))
+        chunk = doc.addChunk()
     
-    # Match photos
-    logger.info("Matching photos...")
-    chunk.matchPhotos(
-        downscale=photo_match_quality,
-        tiepoint_limit=tiepoint_limit,
-    )
-    doc.save()
+    # Check processing status
+    status = check_processing_status(chunk)
+    logger.info("Processing status:")
+    logger.info(f"  Photos added: {status['photos_added']}")
+    logger.info(f"  Photos matched: {status['photos_matched']}")
+    logger.info(f"  Cameras aligned: {status['cameras_aligned']}")
+    logger.info(f"  Depth maps built: {status['depth_maps_built']}")
+    logger.info(f"  Model built: {status['model_built']}")
+    logger.info(f"  Orthomosaic built: {status['orthomosaic_built']}")
     
-    # Align cameras
-    logger.info("Aligning cameras...")
-    chunk.alignCameras()
-    doc.save()
+    # Add photos (if not already added)
+    photos = []
+    if not status['photos_added']:
+        logger.info(f"Adding photos from: {photos_dir}")
+        photos = find_image_files(photos_dir)
+        if not photos:
+            raise ValueError(f"No images found in {photos_dir}")
+        
+        logger.info(f"Found {len(photos)} images")
+        chunk.addPhotos(photos)
+        doc.save()
+    else:
+        logger.info(f"✓ Photos already added ({len(chunk.cameras)} cameras)")
+        photos = [cam.path for cam in chunk.cameras if cam.path]
     
-    # Build depth maps
-    logger.info("Building depth maps...")
-    chunk.buildDepthMaps(
-        downscale=depth_map_quality,
-        filter_mode=Metashape.MildFiltering
-    )
-    doc.save()
+    # Add GCPs if requested (only if not already added)
+    if use_gcps:
+        existing_markers = len(chunk.markers)
+        if existing_markers == 0:
+            if gcp_file and gcp_file.exists():
+                logger.info(f"Loading GCPs from file: {gcp_file}")
+                chunk.importMarkers(str(gcp_file))
+                doc.save()
+            elif gcps:
+                logger.info(f"Using {len(gcps)} GCPs from provided list")
+                # Add markers manually
+                for gcp in gcps:
+                    marker = chunk.addMarker()
+                    marker.label = gcp.get('id', f"GCP_{gcps.index(gcp)+1}")
+                    marker.reference.location = Metashape.Vector((
+                        gcp.get('lon', 0.0),
+                        gcp.get('lat', 0.0),
+                        gcp.get('z', 0.0)
+                    ))
+                    marker.reference.enabled = True
+                    marker.reference.accuracy = Metashape.Vector((
+                        gcp.get('accuracy', 1.0),
+                        gcp.get('accuracy', 1.0),
+                        gcp.get('accuracy', 1.0)
+                    ))
+                doc.save()
+            else:
+                logger.warning("use_gcps=True but no GCPs provided. Processing without GCPs.")
+        else:
+            logger.info(f"✓ GCPs already loaded ({existing_markers} markers)")
+    elif len(chunk.markers) > 0:
+        logger.info(f"Note: {len(chunk.markers)} markers found in project but use_gcps=False")
     
-    # Build 3D model
-    logger.info("Building 3D model...")
-    chunk.buildModel()
-    doc.save()
+    # Match photos (if not already matched)
+    if not status['photos_matched']:
+        logger.info("Matching photos...")
+        chunk.matchPhotos(
+            downscale=photo_match_quality,
+            tiepoint_limit=tiepoint_limit,
+        )
+        doc.save()
+    else:
+        tie_points_count = len(chunk.tie_points) if chunk.tie_points else 0
+        logger.info(f"✓ Photos already matched ({tie_points_count} tie points)")
     
-    # Build orthomosaic
-    logger.info("Building orthomosaic...")
-    chunk.buildOrthomosaic()
-    doc.save()
+    # Align cameras (if not already aligned)
+    if not status['cameras_aligned']:
+        logger.info("Aligning cameras...")
+        chunk.alignCameras()
+        doc.save()
+    else:
+        aligned_count = sum(1 for cam in chunk.cameras if cam.transform)
+        logger.info(f"✓ Cameras already aligned ({aligned_count}/{len(chunk.cameras)} cameras)")
     
-    # Export GeoTIFF
+    # Build depth maps (if not already built)
+    if not status['depth_maps_built']:
+        logger.info("Building depth maps...")
+        chunk.buildDepthMaps(
+            downscale=depth_map_quality,
+            filter_mode=Metashape.MildFiltering
+        )
+        doc.save()
+    else:
+        depth_maps_count = len(chunk.depth_maps) if chunk.depth_maps else 0
+        logger.info(f"✓ Depth maps already built ({depth_maps_count} depth maps)")
+    
+    # Build 3D model (if not already built)
+    if not status['model_built']:
+        logger.info("Building 3D model...")
+        chunk.buildModel()
+        doc.save()
+    else:
+        logger.info("✓ 3D model already built")
+    
+    # Build orthomosaic (if not already built)
+    if not status['orthomosaic_built']:
+        logger.info("Building orthomosaic...")
+        chunk.buildOrthomosaic()
+        doc.save()
+    else:
+        logger.info("✓ Orthomosaic already built")
+    
+    # Export GeoTIFF (always export, in case settings changed)
     ortho_path = output_path / f"{product_id}.tif"
-    logger.info(f"Exporting GeoTIFF to: {ortho_path}")
-    chunk.exportRaster(
-        str(ortho_path),
-        image_compression=compression,
-        description=f"Orthomosaic generated by Qualicum Beach GCP Analysis ({'with GCPs' if use_gcps else 'without GCPs'})",
-    )
-    doc.save()
+    if ortho_path.exists() and not clean_intermediate_files:
+        logger.info(f"✓ Orthomosaic GeoTIFF already exists: {ortho_path}")
+        logger.info("  Skipping export (use clean_intermediate_files=True to force re-export)")
+    else:
+        logger.info(f"Exporting GeoTIFF to: {ortho_path}")
+        chunk.exportRaster(
+            str(ortho_path),
+            image_compression=compression,
+            description=f"Orthomosaic generated by Qualicum Beach GCP Analysis ({'with GCPs' if use_gcps else 'without GCPs'})",
+        )
+        doc.save()
     
     # Get statistics
     stats = {
         'product_id': product_id,
         'use_gcps': use_gcps,
-        'num_photos': len(photos),
-        'num_markers': len(chunk.markers) if use_gcps else 0,
+        'num_photos': len(photos) if photos else len(chunk.cameras),
+        'num_markers': len(chunk.markers),
         'ortho_path': str(ortho_path),
-        'project_path': str(project_path)
+        'project_path': str(project_path),
+        'processing_status': status,
+        'project_loaded': project_exists and not clean_intermediate_files
     }
     
     # Get camera alignment statistics if available
