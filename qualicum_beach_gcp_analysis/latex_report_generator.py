@@ -318,11 +318,9 @@ Hotter colors indicate larger errors.}
     # RMSE analysis
     if comparison.get('rmse_improvement'):
         rmse = comparison['rmse_improvement']
-        latex += f"""\subsection{Root Mean Square Error (RMSE)}
-
-The RMSE measures the overall pixel intensity differences between the orthomosaic and reference.
-Without GCPs: {rmse['without_gcps']:.4f}, With GCPs: {rmse['with_gcps']:.4f}.
-"""
+        latex += "\\subsection{Root Mean Square Error (RMSE)}\n\n"
+        latex += "The RMSE measures the overall pixel intensity differences between the orthomosaic and reference.\n"
+        latex += f"Without GCPs: {rmse['without_gcps']:.4f}, With GCPs: {rmse['with_gcps']:.4f}.\n"
         if rmse['percentage'] > 0:
             latex += f"This represents a {rmse['percentage']:.2f}\\% improvement, indicating that GCPs reduce overall error.\n\n"
         else:
@@ -331,11 +329,9 @@ Without GCPs: {rmse['without_gcps']:.4f}, With GCPs: {rmse['with_gcps']:.4f}.
     # MAE analysis
     if comparison.get('mae_improvement'):
         mae = comparison['mae_improvement']
-        latex += f"""\subsection{Mean Absolute Error (MAE)}
-
-The MAE measures the average absolute pixel differences.
-Without GCPs: {mae['without_gcps']:.4f}, With GCPs: {mae['with_gcps']:.4f}.
-"""
+        latex += "\\subsection{Mean Absolute Error (MAE)}\n\n"
+        latex += "The MAE measures the average absolute pixel differences.\n"
+        latex += f"Without GCPs: {mae['without_gcps']:.4f}, With GCPs: {mae['with_gcps']:.4f}.\n"
         if mae['percentage'] > 0:
             latex += f"This represents a {mae['percentage']:.2f}\\% improvement.\n\n"
         else:
@@ -344,11 +340,9 @@ Without GCPs: {mae['without_gcps']:.4f}, With GCPs: {mae['with_gcps']:.4f}.
     # Similarity analysis
     if comparison.get('similarity_improvement'):
         sim = comparison['similarity_improvement']
-        latex += f"""\subsection{Structural Similarity}
-
-The similarity metric measures how well the orthomosaic structure matches the reference.
-Without GCPs: {sim['without_gcps']:.4f}, With GCPs: {sim['with_gcps']:.4f}.
-"""
+        latex += "\\subsection{Structural Similarity}\n\n"
+        latex += "The similarity metric measures how well the orthomosaic structure matches the reference.\n"
+        latex += f"Without GCPs: {sim['without_gcps']:.4f}, With GCPs: {sim['with_gcps']:.4f}.\n"
         if sim['percentage'] > 0:
             latex += f"This represents a {sim['percentage']:.2f}\\% improvement in structural similarity.\n\n"
         else:
@@ -357,11 +351,9 @@ Without GCPs: {sim['without_gcps']:.4f}, With GCPs: {sim['with_gcps']:.4f}.
     # Seamline analysis
     if comparison.get('seamline_reduction'):
         seam = comparison['seamline_reduction']
-        latex += f"""\subsection{Seamline Artifacts}
-
-Seamline artifacts are detected by analyzing gradient magnitudes.
-Without GCPs: {seam['without_gcps']:.2f}\\% of pixels flagged, With GCPs: {seam['with_gcps']:.2f}\\%.
-"""
+        latex += "\\subsection{Seamline Artifacts}\n\n"
+        latex += "Seamline artifacts are detected by analyzing gradient magnitudes.\n"
+        latex += f"Without GCPs: {seam['without_gcps']:.2f}\\% of pixels flagged, With GCPs: {seam['with_gcps']:.2f}\\%.\n"
         if seam['percentage'] > 0:
             latex += f"This represents a {seam['percentage']:.2f}\\% reduction in detected seamlines.\n\n"
         else:
@@ -369,10 +361,8 @@ Without GCPs: {seam['without_gcps']:.2f}\\% of pixels flagged, With GCPs: {seam[
     
     # 2D error analysis
     if errors_2d_with.get('rmse_2d_pixels'):
-        latex += r"""\subsection{2D Spatial Error}
-
-Feature matching provides spatial error measurements indicating systematic shifts or misalignments.
-"""
+        latex += "\\subsection{2D Spatial Error}\n\n"
+        latex += "Feature matching provides spatial error measurements indicating systematic shifts or misalignments.\n"
         if errors_2d_without.get('rmse_2d_pixels'):
             latex += f"Without GCPs: {errors_2d_without['rmse_2d_pixels']:.2f} pixels RMSE. "
         if errors_2d_with.get('rmse_2d_pixels'):
