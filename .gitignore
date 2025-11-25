@@ -58,6 +58,10 @@ input/images/
 *.psx
 *.psx.files/
 
+# Log files
+*.log
+logs/
+
 # Data files (large files)
 *.kmz
 *.kml
