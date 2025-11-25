@@ -37,24 +37,37 @@ def reproject_to_match(
         ref_bounds = ref.bounds
         ref_width = ref.width
         ref_height = ref.height
+        ref_count = ref.count
     
     with rasterio.open(source_path) as src:
         src_crs = src.crs
+        src_count = src.count
         
-        # Calculate transform
+        # Calculate transform - unpack bounds as (left, bottom, right, top)
         transform, width, height = calculate_default_transform(
             src_crs,
             ref_crs,
             ref_width,
             ref_height,
-            *ref_bounds
+            ref_bounds.left,
+            ref_bounds.bottom,
+            ref_bounds.right,
+            ref_bounds.top
         )
         
-        # Reproject
-        reprojected = np.zeros((ref.count, height, width), dtype=src.dtypes[0])
+        # Verify dimensions are valid
+        if width <= 0 or height <= 0:
+            raise ValueError(f"Invalid dimensions after transform calculation: width={width}, height={height}")
         
+        # Reproject - use source count but match reference dimensions
+        # If source and reference have different band counts, use the minimum
+        output_count = min(src_count, ref_count)
+        reprojected = np.zeros((output_count, height, width), dtype=src.dtypes[0])
+        
+        # Reproject only the bands we need
+        source_bands = list(range(1, output_count + 1))
         reproject(
-            source=rasterio.band(src, range(1, src.count + 1)),
+            source=rasterio.band(src, source_bands),
             destination=reprojected,
             src_transform=src.transform,
             src_crs=src_crs,
@@ -68,7 +81,8 @@ def reproject_to_match(
             'crs': ref_crs,
             'width': width,
             'height': height,
-            'bounds': ref_bounds
+            'bounds': ref_bounds,
+            'count': output_count
         }
         
         # Save if output path provided
@@ -80,7 +94,7 @@ def reproject_to_match(
                 driver='GTiff',
                 height=height,
                 width=width,
-                count=ref.count,
+                count=output_count,
                 dtype=reprojected.dtype,
                 crs=ref_crs,
                 transform=transform,
@@ -303,10 +317,13 @@ def compare_orthomosaic_to_basemap(
         reference_array = ref.read()
     
     # Ensure same number of bands
+    min_bands = min(ortho_reproj.shape[0], reference_array.shape[0])
     if ortho_reproj.shape[0] != reference_array.shape[0]:
-        # Use first band of each
-        ortho_reproj = ortho_reproj[0:1]
-        reference_array = reference_array[0:1]
+        logger.info(f"Band count mismatch: ortho has {ortho_reproj.shape[0]} bands, reference has {reference_array.shape[0]} bands")
+        logger.info(f"Using first {min_bands} band(s) for comparison")
+        # Use matching number of bands
+        ortho_reproj = ortho_reproj[:min_bands]
+        reference_array = reference_array[:min_bands]
     
     # Calculate metrics for each band
     metrics = {
