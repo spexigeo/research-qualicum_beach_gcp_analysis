@@ -45,11 +45,18 @@ outputs/
 *.txt
 *.xml
 
+# Input files and downloaded images
+input/
+input-file_*.txt
+input/images/
+
 # MetaShape export files (specific patterns)
 *_metashape.txt
 *_metashape.xml
 *_gcps_metashape.txt
 *_gcps_metashape.xml
+*.psx
+*.psx.files/
 
 # Data files (large files)
 *.kmz
