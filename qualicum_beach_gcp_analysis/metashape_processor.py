@@ -278,6 +278,25 @@ def process_orthomosaic(
     # Track if document is in read-only mode (needs to be accessible throughout function)
     read_only_mode = False
     
+    def safe_save_document():
+        """Safely save the document, handling read-only mode errors."""
+        nonlocal read_only_mode, doc
+        if read_only_mode:
+            return False
+        
+        try:
+            doc.save(str(project_path))
+            return True
+        except (OSError, RuntimeError) as save_error:
+            error_msg = str(save_error).lower()
+            if "read-only" in error_msg or "editing is disabled" in error_msg:
+                logger.warning(f"⚠️  Document is in read-only mode, skipping save")
+                read_only_mode = True
+                return False
+            else:
+                # Re-raise if it's a different error
+                raise
+    
     # Use context manager to redirect MetaShape output to log file
     with redirect_metashape_output(log_file_path):
         if project_exists and not clean_intermediate_files:
@@ -441,8 +460,7 @@ def process_orthomosaic(
             
             logger.info(f"Found {len(photos)} images")
             chunk.addPhotos(photos)
-            if not read_only_mode:
-                doc.save()
+            safe_save_document()
         else:
             logger.info(f"✓ Photos already added ({len(chunk.cameras)} cameras)")
             # Get camera paths - MetaShape Camera objects use 'label' or 'photo' property
@@ -480,8 +498,7 @@ def process_orthomosaic(
                             chunk.importMarkers(str(gcp_file))
                             markers_added = len(chunk.markers) - existing_markers
                             logger.info(f"  ✓ Added {markers_added} markers from XML via importMarkers")
-                            if not read_only_mode:
-                                doc.save()
+                            safe_save_document()
                         except (RuntimeError, Exception) as e:
                             # XML import failed, fall back to CSV parsing (which works more reliably)
                             logger.warning(f"  ⚠️  XML importMarkers failed: {e}")
@@ -526,18 +543,7 @@ def process_orthomosaic(
                                         continue
                                 
                                 logger.info(f"  ✓ Added {markers_added} markers from XML (parsed manually)")
-                                if not read_only_mode:
-                                    try:
-                                        doc.save()
-                                    except (OSError, RuntimeError) as save_err:
-                                        error_msg = str(save_err).lower()
-                                        if "read-only" in error_msg or "editing is disabled" in error_msg:
-                                            logger.warning(f"  ⚠️  Document is in read-only mode, skipping save")
-                                            read_only_mode = True
-                                        else:
-                                            raise
-                                else:
-                                    logger.debug("  Skipping save (read-only mode)")
+                                safe_save_document()
                             except ET.ParseError as parse_err:
                                 logger.error(f"  ✗ Failed to parse XML file: {parse_err}")
                                 logger.error("  Please check the XML file format or use CSV format instead")
@@ -582,15 +588,13 @@ def process_orthomosaic(
                                     logger.warning(f"  Skipping invalid marker row: {e}")
                         
                         logger.info(f"  Added {markers_added} markers from CSV file")
-                        if not read_only_mode:
-                            doc.save()
+                        safe_save_document()
                     else:
                         # Try to use importMarkers (might work for other formats)
                         logger.info(f"  Unknown format ({file_ext}), attempting importMarkers")
                         try:
                             chunk.importMarkers(str(gcp_file))
-                            if not read_only_mode:
-                                doc.save()
+                            safe_save_document()
                         except Exception as e:
                             logger.error(f"  Failed to import markers: {e}")
                             logger.error("  Please use XML or CSV format, or provide GCPs as a list")
@@ -618,8 +622,7 @@ def process_orthomosaic(
                             final_accuracy
                         ))
                         logger.debug(f"  Marker {marker.label}: accuracy = {final_accuracy}m")
-                    if not read_only_mode:
-                        doc.save()
+                    safe_save_document()
                 else:
                     logger.warning("use_gcps=True but no GCPs provided. Processing without GCPs.")
             else:
@@ -634,8 +637,7 @@ def process_orthomosaic(
                 downscale=photo_match_quality,
                 tiepoint_limit=tiepoint_limit,
             )
-            if not read_only_mode:
-                doc.save()
+            safe_save_document()
         else:
             # Get tie points count safely
             tie_points_count = 0
@@ -655,8 +657,7 @@ def process_orthomosaic(
                 logger.info(f"  Using {enabled_markers} GCPs with high weight (accuracy={gcp_accuracy}m) in bundle adjustment")
                 logger.info(f"  GCPs will have much higher weight than camera pose metadata")
             chunk.alignCameras()
-            if not read_only_mode:
-                doc.save()
+            safe_save_document()
         else:
             aligned_count = sum(1 for cam in chunk.cameras if cam.transform)
             logger.info(f"✓ Cameras already aligned ({aligned_count}/{len(chunk.cameras)} cameras)")
@@ -668,8 +669,7 @@ def process_orthomosaic(
                 downscale=depth_map_quality,
                 filter_mode=Metashape.MildFiltering
             )
-            if not read_only_mode:
-                doc.save()
+            safe_save_document()
         else:
             # Get depth maps count safely
             depth_maps_count = 0
@@ -687,8 +687,7 @@ def process_orthomosaic(
         if not status['model_built']:
             logger.info("Building 3D model...")
             chunk.buildModel()
-            if not read_only_mode:
-                doc.save()
+            safe_save_document()
         else:
             logger.info("✓ 3D model already built")
         
@@ -696,8 +695,7 @@ def process_orthomosaic(
         if not status['orthomosaic_built']:
             logger.info("Building orthomosaic...")
             chunk.buildOrthomosaic()
-            if not read_only_mode:
-                doc.save()
+            safe_save_document()
         else:
             logger.info("✓ Orthomosaic already built")
         
