@@ -730,8 +730,6 @@ def process_orthomosaic(
                     )
                     # Save after export (if not read-only)
                     safe_save_document()
-                    else:
-                        logger.debug("Skipping save (read-only mode)")
                     
                     # Verify the file was created
                     if ortho_path.exists():
