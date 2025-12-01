@@ -177,11 +177,23 @@ def check_processing_status(chunk) -> Dict[str, bool]:
             # If tie_points exists but has no points property or is empty
             photos_matched = False
     
-    # Check depth maps - similar issue, depth_maps is a collection
+    # Check depth maps - MetaShape.DepthMaps is a collection object
     depth_maps_built = False
     if chunk.depth_maps is not None:
         try:
-            depth_maps_built = len(chunk.depth_maps) > 0
+            # Try to access depth maps as a collection
+            # DepthMaps might be iterable or have a count
+            if hasattr(chunk.depth_maps, '__len__'):
+                depth_maps_built = len(chunk.depth_maps) > 0
+            elif hasattr(chunk.depth_maps, '__iter__'):
+                # Try to iterate and count
+                try:
+                    count = sum(1 for _ in chunk.depth_maps)
+                    depth_maps_built = count > 0
+                except:
+                    depth_maps_built = chunk.depth_maps is not None
+            else:
+                depth_maps_built = chunk.depth_maps is not None
         except (TypeError, AttributeError):
             # If depth_maps exists but doesn't support len()
             depth_maps_built = chunk.depth_maps is not None
@@ -260,15 +272,31 @@ def process_orthomosaic(
     compression.tiff_overviews = True
     compression.tiff_tiled = True
     
-    # Check if project exists and load it, or create new one
-    project_exists = project_path.exists()
-    
-    # Use context manager to redirect MetaShape output to log file
-    with redirect_metashape_output(log_file_path):
-        if project_exists and not clean_intermediate_files:
-            logger.info(f"📂 Loading existing project: {project_path}")
-            doc = Metashape.Document()
-            doc.open(str(project_path))
+        # Check if project exists and load it, or create new one
+        project_exists = project_path.exists()
+        
+        # Use context manager to redirect MetaShape output to log file
+        with redirect_metashape_output(log_file_path):
+            if project_exists and not clean_intermediate_files:
+                logger.info(f"📂 Loading existing project: {project_path}")
+                doc = Metashape.Document()
+                try:
+                    doc.open(str(project_path))
+                except RuntimeError as e:
+                    if "already in use" in str(e) or "read-only" in str(e).lower():
+                        logger.warning(f"Project file is already open, closing and reopening...")
+                        # Try to close any existing document
+                        try:
+                            if hasattr(Metashape.app, 'document') and Metashape.app.document:
+                                Metashape.app.document.close()
+                        except:
+                            pass
+                        # Wait a moment and try again
+                        import time
+                        time.sleep(0.5)
+                        doc.open(str(project_path))
+                    else:
+                        raise
             
             # Use the first chunk (or create one if none exists)
             if len(doc.chunks) > 0:
@@ -468,7 +496,16 @@ def process_orthomosaic(
             )
             doc.save()
         else:
-            depth_maps_count = len(chunk.depth_maps) if chunk.depth_maps else 0
+            # Get depth maps count safely
+            depth_maps_count = 0
+            if chunk.depth_maps is not None:
+                try:
+                    if hasattr(chunk.depth_maps, '__len__'):
+                        depth_maps_count = len(chunk.depth_maps)
+                    elif hasattr(chunk.depth_maps, '__iter__'):
+                        depth_maps_count = sum(1 for _ in chunk.depth_maps)
+                except (TypeError, AttributeError):
+                    depth_maps_count = 0
             logger.info(f"✓ Depth maps already built ({depth_maps_count} depth maps)")
         
         # Build 3D model (if not already built)
