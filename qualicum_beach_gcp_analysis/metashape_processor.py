@@ -312,7 +312,23 @@ def process_orthomosaic(
             doc.save()
         else:
             logger.info(f"✓ Photos already added ({len(chunk.cameras)} cameras)")
-            photos = [cam.path for cam in chunk.cameras if cam.path]
+            # Get camera paths - MetaShape Camera objects use 'label' or 'photo' property
+            photos = []
+            for cam in chunk.cameras:
+                try:
+                    # Try different ways to get the path
+                    if hasattr(cam, 'photo') and cam.photo:
+                        photo_path = cam.photo.path if hasattr(cam.photo, 'path') else str(cam.photo)
+                    elif hasattr(cam, 'label') and cam.label:
+                        photo_path = str(cam.label)
+                    elif hasattr(cam, 'path'):
+                        photo_path = str(cam.path)
+                    else:
+                        continue
+                    if photo_path:
+                        photos.append(photo_path)
+                except (AttributeError, TypeError):
+                    continue
         
         # Add GCPs if requested (only if not already added)
         if use_gcps:
