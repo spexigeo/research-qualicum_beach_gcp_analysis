@@ -426,33 +426,46 @@ def compute_feature_matching_2d_error(
                     if std_offset > 0:
                         match_confidence *= (1.0 / (1.0 + std_offset / 10.0))  # Penalize high variance
                     
-                    errors_2d.update({
-                        'mean_offset_x': float(mean_offset_x),
-                        'mean_offset_y': float(mean_offset_y),
-                        'rmse_2d': float(rmse_2d),
-                        'num_matches': len(good_matches),
-                        'match_confidence': float(match_confidence),
-                        'offsets': offsets_flat.tolist()
-                    })
-                    
-                    logger.info(f"Feature matching ({method}): {len(good_matches)} matches, "
-                              f"offset=({mean_offset_x:.2f}, {mean_offset_y:.2f}) px, "
-                              f"RMSE_2D={rmse_2d:.2f} px")
+                    # Validate shift is reasonable (not > 10% of image size)
+                    max_reasonable_shift = max(ortho_norm.shape) * 0.1
+                    if abs(mean_offset_x) < max_reasonable_shift and abs(mean_offset_y) < max_reasonable_shift:
+                        errors_2d.update({
+                            'mean_offset_x': float(mean_offset_x),
+                            'mean_offset_y': float(mean_offset_y),
+                            'rmse_2d': float(rmse_2d),
+                            'num_matches': len(good_matches),
+                            'match_confidence': float(match_confidence),
+                            'offsets': offsets_flat.tolist()
+                        })
+                        
+                        logger.info(f"Feature matching ({method}): {len(good_matches)} matches, "
+                                  f"offset=({mean_offset_x:.2f}, {mean_offset_y:.2f}) px, "
+                                  f"RMSE_2D={rmse_2d:.2f} px")
+                    else:
+                        logger.warning(f"Feature matching ({method}) shift ({mean_offset_x:.1f}, {mean_offset_y:.1f}) too large, rejecting")
         except Exception as e:
             logger.warning(f"Feature matching ({method}) failed: {e}")
     
     elif method == 'phase' and SKIMAGE_AVAILABLE:
         # Use phase correlation (good for global shifts)
         try:
-            shift, error, diffphase = phase_cross_correlation(ref_norm, ortho_norm)
-            errors_2d.update({
-                'mean_offset_x': float(shift[1]),  # Note: phase_cross_correlation returns (row, col)
-                'mean_offset_y': float(shift[0]),
-                'rmse_2d': float(np.sqrt(shift[0]**2 + shift[1]**2)),
-                'num_matches': 1,
-                'match_confidence': float(1.0 - min(1.0, error)),  # Lower error = higher confidence
-            })
-            logger.info(f"Phase correlation: shift=({shift[1]:.2f}, {shift[0]:.2f}) px, error={error:.4f}")
+            shift, error, diffphase = phase_cross_correlation(ref_norm, ortho_norm, upsample_factor=10)
+            mean_offset_x = float(shift[1])  # Note: phase_cross_correlation returns (row, col)
+            mean_offset_y = float(shift[0])
+            
+            # Validate shift is reasonable
+            max_reasonable_shift = max(ortho_norm.shape) * 0.1
+            if abs(mean_offset_x) < max_reasonable_shift and abs(mean_offset_y) < max_reasonable_shift:
+                errors_2d.update({
+                    'mean_offset_x': mean_offset_x,
+                    'mean_offset_y': mean_offset_y,
+                    'rmse_2d': float(np.sqrt(mean_offset_x**2 + mean_offset_y**2)),
+                    'num_matches': 1,
+                    'match_confidence': float(1.0 - min(1.0, error)),  # Lower error = higher confidence
+                })
+                logger.info(f"Phase correlation: shift=({mean_offset_x:.2f}, {mean_offset_y:.2f}) px, error={error:.4f}")
+            else:
+                logger.warning(f"Phase correlation shift ({mean_offset_x:.1f}, {mean_offset_y:.1f}) too large, rejecting")
         except Exception as e:
             logger.warning(f"Phase correlation failed: {e}")
     
@@ -472,16 +485,54 @@ def compute_feature_matching_2d_error(
             offset_x = ij[1] - w//2
             offset_y = ij[0] - h//2
             
-            errors_2d.update({
-                'mean_offset_x': float(offset_x),
-                'mean_offset_y': float(offset_y),
-                'rmse_2d': float(np.sqrt(offset_x**2 + offset_y**2)),
-                'num_matches': 1,
-                'match_confidence': float(result[ij]),
-            })
-            logger.info(f"Template matching: offset=({offset_x:.2f}, {offset_y:.2f}) px")
+            # Validate shift is reasonable
+            max_reasonable_shift = max(h, w) * 0.1
+            if abs(offset_x) < max_reasonable_shift and abs(offset_y) < max_reasonable_shift:
+                errors_2d.update({
+                    'mean_offset_x': float(offset_x),
+                    'mean_offset_y': float(offset_y),
+                    'rmse_2d': float(np.sqrt(offset_x**2 + offset_y**2)),
+                    'num_matches': 1,
+                    'match_confidence': float(result[ij]),
+                })
+                logger.info(f"Template matching: offset=({offset_x:.2f}, {offset_y:.2f}) px")
+            else:
+                logger.warning(f"Template matching shift ({offset_x:.1f}, {offset_y:.1f}) too large, rejecting")
         except Exception as e:
             logger.warning(f"Template matching failed: {e}")
+    
+    elif method == 'lines' and CV2_AVAILABLE:
+        # Use line/edge-based matching for different imagery types
+        try:
+            # Detect edges using Canny
+            edges1 = cv2.Canny(ortho_norm, 50, 150)
+            edges2 = cv2.Canny(ref_norm, 50, 150)
+            
+            # Use phase correlation on edge images for shift estimate
+            if SKIMAGE_AVAILABLE:
+                try:
+                    from skimage.registration import phase_cross_correlation
+                    shift, error, diffphase = phase_cross_correlation(edges2, edges1, upsample_factor=10)
+                    mean_offset_x = float(shift[1])
+                    mean_offset_y = float(shift[0])
+                    
+                    # Validate shift is reasonable (not > 10% of image size)
+                    max_reasonable_shift = max(ortho_norm.shape) * 0.1
+                    if abs(mean_offset_x) < max_reasonable_shift and abs(mean_offset_y) < max_reasonable_shift:
+                        errors_2d.update({
+                            'mean_offset_x': mean_offset_x,
+                            'mean_offset_y': mean_offset_y,
+                            'rmse_2d': float(np.sqrt(mean_offset_x**2 + mean_offset_y**2)),
+                            'num_matches': int(np.sum(edges1 > 0) + np.sum(edges2 > 0)),  # Edge pixel count
+                            'match_confidence': float(1.0 - min(1.0, error)),
+                        })
+                        logger.info(f"Line/edge matching: offset=({mean_offset_x:.2f}, {mean_offset_y:.2f}) px, error={error:.4f}")
+                    else:
+                        logger.warning(f"Line/edge matching shift ({mean_offset_x:.1f}, {mean_offset_y:.1f}) too large, rejecting")
+                except Exception as e:
+                    logger.debug(f"Phase correlation on edges failed: {e}")
+        except Exception as e:
+            logger.warning(f"Line/edge matching failed: {e}")
     
     return errors_2d
 
