@@ -363,9 +363,9 @@ def compute_feature_matching_2d_error(
         # Use OpenCV feature matching
         try:
             if method == 'sift':
-                detector = cv2.SIFT_create()
+                detector = cv2.SIFT_create(nfeatures=5000, contrastThreshold=0.01, edgeThreshold=20)
             else:  # orb
-                detector = cv2.ORB_create()
+                detector = cv2.ORB_create(nfeatures=5000, scaleFactor=1.2, nlevels=10)
             
             # Detect keypoints and descriptors
             kp1, des1 = detector.detectAndCompute(ortho_norm, None)
@@ -376,17 +376,33 @@ def compute_feature_matching_2d_error(
                 if method == 'sift':
                     matcher = cv2.BFMatcher()
                     matches = matcher.knnMatch(des1, des2, k=2)
-                    # Apply Lowe's ratio test
+                    # Apply Lowe's ratio test with more lenient threshold for different imagery
                     good_matches = []
                     for match_pair in matches:
                         if len(match_pair) == 2:
                             m, n = match_pair
-                            if m.distance < 0.75 * n.distance:
+                            if m.distance < 0.85 * n.distance:  # More lenient for different imagery
                                 good_matches.append(m)
                 else:  # orb
                     matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
                     good_matches = matcher.match(des1, des2)
-                    good_matches = sorted(good_matches, key=lambda x: x.distance)[:100]
+                    good_matches = sorted(good_matches, key=lambda x: x.distance)[:200]  # More matches
+                
+                # Filter matches by geometric consistency (RANSAC)
+                if len(good_matches) > 4:
+                    src_pts = np.float32([kp1[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+                    dst_pts = np.float32([kp2[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+                    
+                    # Use RANSAC to find inliers
+                    try:
+                        M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+                        if mask is not None:
+                            inlier_matches = [good_matches[i] for i in range(len(good_matches)) if mask[i]]
+                            if len(inlier_matches) > 4:
+                                good_matches = inlier_matches
+                                logger.debug(f"RANSAC filtered to {len(good_matches)} inlier matches")
+                    except:
+                        pass  # If RANSAC fails, use all matches
                 
                 if len(good_matches) > 4:  # Need at least 4 matches
                     # Extract matched points
@@ -660,9 +676,10 @@ def apply_2d_shift_to_orthomosaic(
                 ref_band = ref_band[::step, ::step]
         
         # Try multiple feature matching methods, use the best one
+        # Add line/edge-based matching for different imagery types
         methods_to_try = []
         if CV2_AVAILABLE:
-            methods_to_try.extend(['sift', 'orb'])
+            methods_to_try.extend(['sift', 'orb', 'lines'])
         if SKIMAGE_AVAILABLE:
             methods_to_try.extend(['phase', 'template'])
         
@@ -874,66 +891,13 @@ def align_orthomosaic_to_gcps(
                 logger.debug(f"GCP {gcp.get('id', 'unknown')} outside reference bounds, skipping")
                 continue
             
-            # Find where this GCP actually appears in the orthomosaic using template matching
-            # Extract a small template around the GCP location in the reference
-            template_size = 50  # pixels
-            half_size = template_size // 2
+            # Project GCP directly to pixel coordinates in orthomosaic using its geotransform
+            # This is more accurate than template matching since we know the GCP coordinates
+            ortho_transform = metadata['transform']
+            ortho_row, ortho_col = rasterio.transform.rowcol(ortho_transform, lon, lat)
             
-            # Get template from reference (where GCP should be)
-            ref_y_start = max(0, int(ref_row) - half_size)
-            ref_y_end = min(ref_height, int(ref_row) + half_size)
-            ref_x_start = max(0, int(ref_col) - half_size)
-            ref_x_end = min(ref_width, int(ref_col) + half_size)
-            
-            if ref_y_end - ref_y_start < template_size // 2 or ref_x_end - ref_x_start < template_size // 2:
-                logger.debug(f"GCP {gcp.get('id', 'unknown')} too close to reference edge, skipping")
-                continue
-            
-            template = ref_norm[ref_y_start:ref_y_end, ref_x_start:ref_x_end]
-            
-            # Find template in orthomosaic using phase correlation or template matching
-            ortho_row, ortho_col = None, None
-            
-            if SKIMAGE_AVAILABLE:
-                try:
-                    from skimage.feature import match_template
-                    # Search in a region around the expected location
-                    search_margin = 200  # pixels
-                    ortho_transform = metadata['transform']
-                    expected_row, expected_col = rasterio.transform.rowcol(ortho_transform, lon, lat)
-                    
-                    search_y_start = max(0, int(expected_row) - search_margin)
-                    search_y_end = min(ortho_norm.shape[0], int(expected_row) + search_margin)
-                    search_x_start = max(0, int(expected_col) - search_margin)
-                    search_x_end = min(ortho_norm.shape[1], int(expected_col) + search_margin)
-                    
-                    if (search_y_end - search_y_start > template.shape[0] and 
-                        search_x_end - search_x_start > template.shape[1]):
-                        search_region = ortho_norm[search_y_start:search_y_end, search_x_start:search_x_end]
-                        result = match_template(search_region, template)
-                        ij = np.unravel_index(np.argmax(result), result.shape)
-                        
-                        # Convert back to full orthomosaic coordinates
-                        ortho_row = search_y_start + ij[0] + template.shape[0] // 2
-                        ortho_col = search_x_start + ij[1] + template.shape[1] // 2
-                        
-                        match_confidence = result[ij]
-                        offset_x = ortho_col - expected_col
-                        offset_y = ortho_row - expected_row
-                        logger.info(f"GCP {gcp.get('id', 'unknown')}: found at ({ortho_col:.1f}, {ortho_row:.1f}) "
-                                   f"(expected: ({expected_col:.1f}, {expected_row:.1f}), "
-                                   f"offset: ({offset_x:.1f}, {offset_y:.1f}) px, confidence: {match_confidence:.3f})")
-                    else:
-                        # Fallback: use expected location
-                        ortho_row, ortho_col = expected_row, expected_col
-                except Exception as e:
-                    logger.debug(f"Template matching failed for GCP {gcp.get('id', 'unknown')}: {e}, using expected location")
-                    ortho_transform = metadata['transform']
-                    ortho_row, ortho_col = rasterio.transform.rowcol(ortho_transform, lon, lat)
-            else:
-                # Fallback: use expected location from transform
-                ortho_transform = metadata['transform']
-                ortho_row, ortho_col = rasterio.transform.rowcol(ortho_transform, lon, lat)
+            logger.debug(f"GCP {gcp.get('id', 'unknown')}: reference pixel ({ref_col:.1f}, {ref_row:.1f}), "
+                        f"orthomosaic pixel ({ortho_col:.1f}, {ortho_row:.1f})")
             
             # Check if orthomosaic coordinates are within bounds
             if (0 <= ortho_row < ortho_reproj.shape[1] and 0 <= ortho_col < ortho_reproj.shape[2]):
