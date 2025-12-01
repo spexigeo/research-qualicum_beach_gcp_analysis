@@ -275,12 +275,14 @@ def process_orthomosaic(
     # Check if project exists and load it, or create new one
     project_exists = project_path.exists()
     
+    # Track if document is in read-only mode (needs to be accessible throughout function)
+    read_only_mode = False
+    
     # Use context manager to redirect MetaShape output to log file
     with redirect_metashape_output(log_file_path):
         if project_exists and not clean_intermediate_files:
             logger.info(f"📂 Loading existing project: {project_path}")
             doc = Metashape.Document()
-            read_only_mode = False
             try:
                 doc.open(str(project_path))
             except RuntimeError as e:
@@ -299,17 +301,10 @@ def process_orthomosaic(
                     try:
                         doc.open(str(project_path))
                     except RuntimeError as e2:
-                        if "read-only" in str(e2).lower():
-                            logger.warning(f"Project opened in read-only mode. Some operations may be limited.")
+                        error_msg2 = str(e2).lower()
+                        if "read-only" in error_msg2:
+                            logger.warning(f"⚠️  Project opened in read-only mode. Saving will be skipped.")
                             read_only_mode = True
-                            # Try to open in read-write mode by closing and reopening
-                            try:
-                                doc.close()
-                                time.sleep(0.5)
-                                doc.open(str(project_path))
-                                read_only_mode = False
-                            except:
-                                read_only_mode = True
                         else:
                             raise
                 else:
@@ -354,7 +349,8 @@ def process_orthomosaic(
             
             logger.info(f"Found {len(photos)} images")
             chunk.addPhotos(photos)
-            doc.save()
+            if not read_only_mode:
+                doc.save()
         else:
             logger.info(f"✓ Photos already added ({len(chunk.cameras)} cameras)")
             # Get camera paths - MetaShape Camera objects use 'label' or 'photo' property
@@ -389,7 +385,8 @@ def process_orthomosaic(
                         # MetaShape XML format - use importMarkers
                         logger.info("  Detected XML format, using importMarkers")
                         chunk.importMarkers(str(gcp_file))
-                        doc.save()
+                        if not read_only_mode:
+                            doc.save()
                     elif file_ext == '.csv' or file_ext == '.txt':
                         # CSV format - read and add markers manually
                         logger.info("  Detected CSV format, reading and adding markers manually")
@@ -430,13 +427,15 @@ def process_orthomosaic(
                                     logger.warning(f"  Skipping invalid marker row: {e}")
                         
                         logger.info(f"  Added {markers_added} markers from CSV file")
-                        doc.save()
+                        if not read_only_mode:
+                            doc.save()
                     else:
                         # Try to use importMarkers (might work for other formats)
                         logger.info(f"  Unknown format ({file_ext}), attempting importMarkers")
                         try:
                             chunk.importMarkers(str(gcp_file))
-                            doc.save()
+                            if not read_only_mode:
+                                doc.save()
                         except Exception as e:
                             logger.error(f"  Failed to import markers: {e}")
                             logger.error("  Please use XML or CSV format, or provide GCPs as a list")
@@ -464,7 +463,8 @@ def process_orthomosaic(
                             final_accuracy
                         ))
                         logger.debug(f"  Marker {marker.label}: accuracy = {final_accuracy}m")
-                    doc.save()
+                    if not read_only_mode:
+                        doc.save()
                 else:
                     logger.warning("use_gcps=True but no GCPs provided. Processing without GCPs.")
             else:
@@ -479,7 +479,8 @@ def process_orthomosaic(
                 downscale=photo_match_quality,
                 tiepoint_limit=tiepoint_limit,
             )
-            doc.save()
+            if not read_only_mode:
+                doc.save()
         else:
             # Get tie points count safely
             tie_points_count = 0
@@ -499,7 +500,8 @@ def process_orthomosaic(
                 logger.info(f"  Using {enabled_markers} GCPs with high weight (accuracy={gcp_accuracy}m) in bundle adjustment")
                 logger.info(f"  GCPs will have much higher weight than camera pose metadata")
             chunk.alignCameras()
-            doc.save()
+            if not read_only_mode:
+                doc.save()
         else:
             aligned_count = sum(1 for cam in chunk.cameras if cam.transform)
             logger.info(f"✓ Cameras already aligned ({aligned_count}/{len(chunk.cameras)} cameras)")
@@ -511,7 +513,8 @@ def process_orthomosaic(
                 downscale=depth_map_quality,
                 filter_mode=Metashape.MildFiltering
             )
-            doc.save()
+            if not read_only_mode:
+                doc.save()
         else:
             # Get depth maps count safely
             depth_maps_count = 0
@@ -529,7 +532,8 @@ def process_orthomosaic(
         if not status['model_built']:
             logger.info("Building 3D model...")
             chunk.buildModel()
-            doc.save()
+            if not read_only_mode:
+                doc.save()
         else:
             logger.info("✓ 3D model already built")
         
@@ -537,7 +541,8 @@ def process_orthomosaic(
         if not status['orthomosaic_built']:
             logger.info("Building orthomosaic...")
             chunk.buildOrthomosaic()
-            doc.save()
+            if not read_only_mode:
+                doc.save()
         else:
             logger.info("✓ Orthomosaic already built")
         
