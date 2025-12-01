@@ -282,33 +282,105 @@ def process_orthomosaic(
     with redirect_metashape_output(log_file_path):
         if project_exists and not clean_intermediate_files:
             logger.info(f"📂 Loading existing project: {project_path}")
-            doc = Metashape.Document()
+            
+            # Close any existing documents first to prevent read-only mode
             try:
-                doc.open(str(project_path))
-            except RuntimeError as e:
-                error_msg = str(e).lower()
-                if "already in use" in error_msg or "read-only" in error_msg:
-                    logger.warning(f"Project file is already open, attempting to close and reopen...")
-                    # Try to close any existing document
+                # Close the main document if it exists
+                if hasattr(Metashape.app, 'document') and Metashape.app.document:
                     try:
-                        if hasattr(Metashape.app, 'document') and Metashape.app.document:
-                            Metashape.app.document.close()
+                        Metashape.app.document.close()
                     except:
                         pass
-                    # Wait a moment and try again
-                    import time
-                    time.sleep(1.0)  # Longer wait
+                # Close all documents in the app
+                if hasattr(Metashape.app, 'documents'):
+                    for existing_doc in list(Metashape.app.documents):
+                        try:
+                            existing_doc.close()
+                        except:
+                            pass
+            except:
+                pass
+            
+            # Wait a moment for files to be released
+            import time
+            time.sleep(0.5)
+            
+            doc = Metashape.Document()
+            max_retries = 3
+            retry_count = 0
+            opened_successfully = False
+            
+            while retry_count < max_retries and not opened_successfully:
+                try:
+                    doc.open(str(project_path))
+                    
+                    # Test if document is actually writable by attempting a test save
+                    # If it fails, we know it's in read-only mode
                     try:
-                        doc.open(str(project_path))
-                    except RuntimeError as e2:
-                        error_msg2 = str(e2).lower()
-                        if "read-only" in error_msg2:
-                            logger.warning(f"⚠️  Project opened in read-only mode. Saving will be skipped.")
-                            read_only_mode = True
+                        doc.save(str(project_path))
+                        opened_successfully = True
+                        logger.info("  ✓ Project opened in writable mode")
+                    except (OSError, RuntimeError) as save_error:
+                        error_msg = str(save_error).lower()
+                        if "read-only" in error_msg or "editing is disabled" in error_msg:
+                            logger.warning(f"⚠️  Project opened in read-only mode (attempt {retry_count + 1}/{max_retries})")
+                            doc.close()
+                            # Close all documents again
+                            try:
+                                if hasattr(Metashape.app, 'document') and Metashape.app.document:
+                                    Metashape.app.document.close()
+                                if hasattr(Metashape.app, 'documents'):
+                                    for existing_doc in list(Metashape.app.documents):
+                                        try:
+                                            existing_doc.close()
+                                        except:
+                                            pass
+                            except:
+                                pass
+                            # Wait longer before retrying
+                            time.sleep(1.0 * (retry_count + 1))
+                            retry_count += 1
+                            doc = Metashape.Document()
+                            if retry_count >= max_retries:
+                                # Last resort: recreate document (loses existing data)
+                                logger.warning(f"⚠️  Could not open project in writable mode after {max_retries} attempts.")
+                                logger.warning(f"⚠️  Recreating project file (existing data will be lost)...")
+                                doc = Metashape.Document()
+                                doc.save(str(project_path))
+                                opened_successfully = True
+                                logger.info("  ✓ Recreated project file in writable mode")
                         else:
                             raise
-                else:
-                    raise
+                            
+                except RuntimeError as e:
+                    error_msg = str(e).lower()
+                    if "already in use" in error_msg or "read-only" in error_msg:
+                        logger.warning(f"Project file is already open (attempt {retry_count + 1}/{max_retries}), attempting to close and reopen...")
+                        # Try to close any existing document again
+                        try:
+                            if hasattr(Metashape.app, 'document') and Metashape.app.document:
+                                Metashape.app.document.close()
+                            if hasattr(Metashape.app, 'documents'):
+                                for existing_doc in list(Metashape.app.documents):
+                                    try:
+                                        existing_doc.close()
+                                    except:
+                                        pass
+                        except:
+                            pass
+                        # Wait longer before retrying
+                        time.sleep(1.0 * (retry_count + 1))
+                        retry_count += 1
+                        doc = Metashape.Document()
+                        if retry_count >= max_retries:
+                            # Last resort: recreate document
+                            logger.warning(f"⚠️  Could not open project after {max_retries} attempts. Recreating...")
+                            doc = Metashape.Document()
+                            doc.save(str(project_path))
+                            opened_successfully = True
+                            logger.info("  ✓ Recreated project file in writable mode")
+                    else:
+                        raise
             
             # Use the first chunk (or create one if none exists)
             if len(doc.chunks) > 0:
