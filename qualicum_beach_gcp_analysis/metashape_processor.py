@@ -319,6 +319,7 @@ def process_orthomosaic(
                     try:
                         doc.save(str(project_path))
                         opened_successfully = True
+                        read_only_mode = False  # Explicitly set to False when writable
                         logger.info("  ✓ Project opened in writable mode")
                     except (OSError, RuntimeError) as save_error:
                         error_msg = str(save_error).lower()
@@ -342,13 +343,22 @@ def process_orthomosaic(
                             retry_count += 1
                             doc = Metashape.Document()
                             if retry_count >= max_retries:
-                                # Last resort: recreate document (loses existing data)
+                                # After max retries, accept read-only mode and continue
                                 logger.warning(f"⚠️  Could not open project in writable mode after {max_retries} attempts.")
-                                logger.warning(f"⚠️  Recreating project file (existing data will be lost)...")
-                                doc = Metashape.Document()
-                                doc.save(str(project_path))
-                                opened_successfully = True
-                                logger.info("  ✓ Recreated project file in writable mode")
+                                logger.warning(f"⚠️  Continuing in read-only mode (saves will be skipped)")
+                                read_only_mode = True
+                                # Try to open one more time (will be read-only)
+                                try:
+                                    doc.open(str(project_path))
+                                    opened_successfully = True
+                                except:
+                                    # If even read-only open fails, recreate
+                                    logger.warning(f"⚠️  Recreating project file (existing data will be lost)...")
+                                    doc = Metashape.Document()
+                                    doc.save(str(project_path))
+                                    opened_successfully = True
+                                    read_only_mode = False
+                                    logger.info("  ✓ Recreated project file in writable mode")
                         else:
                             raise
                             
@@ -373,12 +383,22 @@ def process_orthomosaic(
                         retry_count += 1
                         doc = Metashape.Document()
                         if retry_count >= max_retries:
-                            # Last resort: recreate document
-                            logger.warning(f"⚠️  Could not open project after {max_retries} attempts. Recreating...")
-                            doc = Metashape.Document()
-                            doc.save(str(project_path))
-                            opened_successfully = True
-                            logger.info("  ✓ Recreated project file in writable mode")
+                            # After max retries, try to open in read-only mode
+                            logger.warning(f"⚠️  Could not open project after {max_retries} attempts.")
+                            logger.warning(f"⚠️  Attempting to open in read-only mode...")
+                            try:
+                                doc.open(str(project_path))
+                                read_only_mode = True
+                                opened_successfully = True
+                                logger.info("  ✓ Project opened in read-only mode (saves will be skipped)")
+                            except:
+                                # Last resort: recreate document
+                                logger.warning(f"⚠️  Recreating project file (existing data will be lost)...")
+                                doc = Metashape.Document()
+                                doc.save(str(project_path))
+                                opened_successfully = True
+                                read_only_mode = False
+                                logger.info("  ✓ Recreated project file in writable mode")
                     else:
                         raise
             
@@ -507,7 +527,17 @@ def process_orthomosaic(
                                 
                                 logger.info(f"  ✓ Added {markers_added} markers from XML (parsed manually)")
                                 if not read_only_mode:
-                                    doc.save()
+                                    try:
+                                        doc.save()
+                                    except (OSError, RuntimeError) as save_err:
+                                        error_msg = str(save_err).lower()
+                                        if "read-only" in error_msg or "editing is disabled" in error_msg:
+                                            logger.warning(f"  ⚠️  Document is in read-only mode, skipping save")
+                                            read_only_mode = True
+                                        else:
+                                            raise
+                                else:
+                                    logger.debug("  Skipping save (read-only mode)")
                             except ET.ParseError as parse_err:
                                 logger.error(f"  ✗ Failed to parse XML file: {parse_err}")
                                 logger.error("  Please check the XML file format or use CSV format instead")
