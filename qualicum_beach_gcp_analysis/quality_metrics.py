@@ -836,8 +836,6 @@ def align_orthomosaic_to_gcps(
         ref_height = ref.height
     
     # Convert GCP lat/lon to pixel coordinates in reference
-    from rasterio.transform import xy
-    
     gcp_pairs = []
     for gcp in gcps:
         lat = gcp.get('lat')
