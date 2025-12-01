@@ -187,7 +187,8 @@ def process_orthomosaic(
     photo_match_quality: int = PhotoMatchQuality.MediumQuality,
     depth_map_quality: int = DepthMapQuality.MediumQuality,
     tiepoint_limit: int = 10000,
-    use_gcps: bool = False
+    use_gcps: bool = False,
+    gcp_accuracy: float = 0.01
 ) -> Dict:
     """
     Process orthomosaic using MetaShape.
@@ -204,6 +205,8 @@ def process_orthomosaic(
         depth_map_quality: DepthMapQuality enum value
         tiepoint_limit: Maximum number of tie points
         use_gcps: Whether to use GCPs in processing
+        gcp_accuracy: Accuracy of GCPs in meters. Lower values = higher weight in bundle adjustment.
+                     Default 0.01m (1cm) gives very high weight. Use 0.001m (1mm) for extremely high accuracy GCPs.
         
     Returns:
         Dictionary with processing results and statistics
@@ -331,9 +334,13 @@ def process_orthomosaic(
                                     marker.reference.location = Metashape.Vector((x, y, z))
                                     marker.reference.enabled = True
                                     
-                                    # Parse accuracy
-                                    accuracy = float(row.get('Accuracy', row.get('accuracy', 1.0)))
-                                    marker.reference.accuracy = Metashape.Vector((accuracy, accuracy, accuracy))
+                                    # Parse accuracy - use provided gcp_accuracy parameter for high weight
+                                    # Lower accuracy values = higher weight in bundle adjustment
+                                    # If CSV has accuracy, use the minimum of CSV value and gcp_accuracy
+                                    csv_accuracy = float(row.get('Accuracy', row.get('accuracy', gcp_accuracy)))
+                                    final_accuracy = min(csv_accuracy, gcp_accuracy) if csv_accuracy > 0 else gcp_accuracy
+                                    marker.reference.accuracy = Metashape.Vector((final_accuracy, final_accuracy, final_accuracy))
+                                    logger.debug(f"  Marker {marker.label}: accuracy = {final_accuracy}m (weight = 1/{final_accuracy:.3f})")
                                     
                                     markers_added += 1
                                 except (ValueError, KeyError) as e:
@@ -353,6 +360,7 @@ def process_orthomosaic(
                             raise
                 elif gcps:
                     logger.info(f"Using {len(gcps)} GCPs from provided list")
+                    logger.info(f"  Setting GCP accuracy to {gcp_accuracy}m for high weight in bundle adjustment")
                     # Add markers manually
                     for gcp in gcps:
                         marker = chunk.addMarker()
@@ -363,11 +371,16 @@ def process_orthomosaic(
                             gcp.get('z', 0.0)
                         ))
                         marker.reference.enabled = True
+                        # Use gcp_accuracy parameter for high weight (lower = higher weight)
+                        # If GCP dict has accuracy, use the minimum
+                        gcp_dict_accuracy = gcp.get('accuracy', gcp_accuracy)
+                        final_accuracy = min(gcp_dict_accuracy, gcp_accuracy) if gcp_dict_accuracy > 0 else gcp_accuracy
                         marker.reference.accuracy = Metashape.Vector((
-                            gcp.get('accuracy', 1.0),
-                            gcp.get('accuracy', 1.0),
-                            gcp.get('accuracy', 1.0)
+                            final_accuracy,
+                            final_accuracy,
+                            final_accuracy
                         ))
+                        logger.debug(f"  Marker {marker.label}: accuracy = {final_accuracy}m")
                     doc.save()
                 else:
                     logger.warning("use_gcps=True but no GCPs provided. Processing without GCPs.")
@@ -391,6 +404,10 @@ def process_orthomosaic(
         # Align cameras (if not already aligned)
         if not status['cameras_aligned']:
             logger.info("Aligning cameras...")
+            if use_gcps and len(chunk.markers) > 0:
+                enabled_markers = sum(1 for m in chunk.markers if m.reference.enabled)
+                logger.info(f"  Using {enabled_markers} GCPs with high weight (accuracy={gcp_accuracy}m) in bundle adjustment")
+                logger.info(f"  GCPs will have much higher weight than camera pose metadata")
             chunk.alignCameras()
             doc.save()
         else:

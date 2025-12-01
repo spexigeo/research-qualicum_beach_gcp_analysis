@@ -42,7 +42,9 @@ def export_to_metashape_csv(
             lon = gcp.get('lon', gcp.get('longitude', 0.0))
             lat = gcp.get('lat', gcp.get('latitude', 0.0))
             z = gcp.get('z', gcp.get('elevation', gcp.get('altitude', 0.0)))
-            accuracy = gcp.get('accuracy', gcp.get('rmse', 1.0))
+            # Use very high accuracy (low value) for high weight in bundle adjustment
+            # Default to 0.01m (1cm) if not specified - this gives very high weight
+            accuracy = gcp.get('accuracy', gcp.get('rmse', 0.01))
             enabled = '1'  # Default to enabled
             
             writer.writerow([label, lon, lat, z, accuracy, enabled])
@@ -89,8 +91,9 @@ def export_to_metashape_xml(
         position.set('y', str(lat))
         position.set('z', str(z))
         
-        # Accuracy
-        accuracy = gcp.get('accuracy', gcp.get('rmse', 1.0))
+        # Accuracy - use very high accuracy (low value) for high weight in bundle adjustment
+        # Default to 0.01m (1cm) if not specified - this gives very high weight
+        accuracy = gcp.get('accuracy', gcp.get('rmse', 0.01))
         accuracy_elem = ET.SubElement(marker, 'accuracy')
         accuracy_elem.set('x', str(accuracy))
         accuracy_elem.set('y', str(accuracy))
