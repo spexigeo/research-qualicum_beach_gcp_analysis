@@ -277,26 +277,26 @@ def process_orthomosaic(
     
     # Use context manager to redirect MetaShape output to log file
     with redirect_metashape_output(log_file_path):
-            if project_exists and not clean_intermediate_files:
-                logger.info(f"📂 Loading existing project: {project_path}")
-                doc = Metashape.Document()
-                try:
+        if project_exists and not clean_intermediate_files:
+            logger.info(f"📂 Loading existing project: {project_path}")
+            doc = Metashape.Document()
+            try:
+                doc.open(str(project_path))
+            except RuntimeError as e:
+                if "already in use" in str(e) or "read-only" in str(e).lower():
+                    logger.warning(f"Project file is already open, closing and reopening...")
+                    # Try to close any existing document
+                    try:
+                        if hasattr(Metashape.app, 'document') and Metashape.app.document:
+                            Metashape.app.document.close()
+                    except:
+                        pass
+                    # Wait a moment and try again
+                    import time
+                    time.sleep(0.5)
                     doc.open(str(project_path))
-                except RuntimeError as e:
-                    if "already in use" in str(e) or "read-only" in str(e).lower():
-                        logger.warning(f"Project file is already open, closing and reopening...")
-                        # Try to close any existing document
-                        try:
-                            if hasattr(Metashape.app, 'document') and Metashape.app.document:
-                                Metashape.app.document.close()
-                        except:
-                            pass
-                        # Wait a moment and try again
-                        import time
-                        time.sleep(0.5)
-                        doc.open(str(project_path))
-                    else:
-                        raise
+                else:
+                    raise
             
             # Use the first chunk (or create one if none exists)
             if len(doc.chunks) > 0:
