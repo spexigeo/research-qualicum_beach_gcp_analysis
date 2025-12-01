@@ -8,7 +8,7 @@ from .s3_downloader import download_all_images_from_input_dir, download_images_f
 from .metashape_processor import process_orthomosaic, PhotoMatchQuality, DepthMapQuality
 from .quality_metrics import compare_orthomosaic_to_basemap, calculate_rmse, calculate_mae, detect_seamlines, compute_feature_matching_2d_error
 from .report_generator import generate_comparison_report, generate_markdown_report, convert_to_json_serializable
-from .latex_report_generator import generate_latex_report
+from .latex_report_generator import generate_latex_report, generate_comprehensive_latex_report
 from .visualization_comparison import create_error_visualization, create_seamline_visualization, create_comparison_side_by_side, create_metrics_summary_plot
 
 __all__ = [
@@ -38,6 +38,7 @@ __all__ = [
     'generate_markdown_report',
     'convert_to_json_serializable',
     'generate_latex_report',
+    'generate_comprehensive_latex_report',
     'create_error_visualization',
     'create_seamline_visualization',
     'create_comparison_side_by_side',
