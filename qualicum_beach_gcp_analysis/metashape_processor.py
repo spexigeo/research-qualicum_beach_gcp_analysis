@@ -165,11 +165,32 @@ def check_processing_status(chunk) -> Dict[str, bool]:
     Returns:
         Dictionary indicating which steps are complete
     """
+    # Check tie points - MetaShape.TiePoints object doesn't support len()
+    # Check if tie_points exists and has points by accessing the points property
+    photos_matched = False
+    if chunk.tie_points is not None:
+        try:
+            # Try to access tie points - if it has points, this will work
+            points = chunk.tie_points.points
+            photos_matched = points is not None and len(points) > 0
+        except (AttributeError, TypeError):
+            # If tie_points exists but has no points property or is empty
+            photos_matched = False
+    
+    # Check depth maps - similar issue, depth_maps is a collection
+    depth_maps_built = False
+    if chunk.depth_maps is not None:
+        try:
+            depth_maps_built = len(chunk.depth_maps) > 0
+        except (TypeError, AttributeError):
+            # If depth_maps exists but doesn't support len()
+            depth_maps_built = chunk.depth_maps is not None
+    
     status = {
         'photos_added': len(chunk.cameras) > 0,
-        'photos_matched': chunk.tie_points is not None and len(chunk.tie_points) > 0,
+        'photos_matched': photos_matched,
         'cameras_aligned': len(chunk.cameras) > 0 and any(cam.transform for cam in chunk.cameras),
-        'depth_maps_built': chunk.depth_maps is not None and len(chunk.depth_maps) > 0,
+        'depth_maps_built': depth_maps_built,
         'model_built': chunk.model is not None,
         'orthomosaic_built': chunk.orthomosaic is not None
     }
@@ -399,7 +420,14 @@ def process_orthomosaic(
             )
             doc.save()
         else:
-            tie_points_count = len(chunk.tie_points) if chunk.tie_points else 0
+            # Get tie points count safely
+            tie_points_count = 0
+            if chunk.tie_points is not None:
+                try:
+                    points = chunk.tie_points.points
+                    tie_points_count = len(points) if points is not None else 0
+                except (AttributeError, TypeError):
+                    tie_points_count = 0
             logger.info(f"✓ Photos already matched ({tie_points_count} tie points)")
         
         # Align cameras (if not already aligned)
