@@ -382,11 +382,64 @@ def process_orthomosaic(
                     file_ext = gcp_file.suffix.lower()
                     
                     if file_ext == '.xml':
-                        # MetaShape XML format - use importMarkers
-                        logger.info("  Detected XML format, using importMarkers")
-                        chunk.importMarkers(str(gcp_file))
-                        if not read_only_mode:
-                            doc.save()
+                        # MetaShape XML format - try importMarkers first
+                        logger.info("  Detected XML format, attempting importMarkers")
+                        try:
+                            chunk.importMarkers(str(gcp_file))
+                            markers_added = len(chunk.markers) - existing_markers
+                            logger.info(f"  ✓ Added {markers_added} markers from XML via importMarkers")
+                            if not read_only_mode:
+                                doc.save()
+                        except (RuntimeError, Exception) as e:
+                            # XML import failed, fall back to CSV parsing (which works more reliably)
+                            logger.warning(f"  ⚠️  XML importMarkers failed: {e}")
+                            logger.info("  Falling back to CSV-style parsing of XML file...")
+                            # Parse XML manually and add markers
+                            import xml.etree.ElementTree as ET
+                            markers_added = 0
+                            try:
+                                tree = ET.parse(str(gcp_file))
+                                root = tree.getroot()
+                                # Find all markers in the XML
+                                for marker_elem in root.findall('.//marker'):
+                                    try:
+                                        label = marker_elem.get('label', f'GCP_{markers_added+1:03d}')
+                                        position = marker_elem.find('position')
+                                        accuracy_elem = marker_elem.find('accuracy')
+                                        
+                                        if position is not None:
+                                            lon = float(position.get('x', 0.0))
+                                            lat = float(position.get('y', 0.0))
+                                            z = float(position.get('z', 0.0))
+                                            
+                                            # Get accuracy (default to gcp_accuracy parameter)
+                                            if accuracy_elem is not None:
+                                                acc_x = float(accuracy_elem.get('x', gcp_accuracy))
+                                                acc_y = float(accuracy_elem.get('y', gcp_accuracy))
+                                                acc_z = float(accuracy_elem.get('z', gcp_accuracy))
+                                                final_accuracy = min(acc_x, acc_y, acc_z)  # Use minimum
+                                            else:
+                                                final_accuracy = gcp_accuracy
+                                            
+                                            # Add marker
+                                            marker = chunk.addMarker()
+                                            marker.label = label
+                                            marker.reference.location = Metashape.Vector([lon, lat, z])
+                                            marker.reference.accuracy = Metashape.Vector([final_accuracy, final_accuracy, final_accuracy])
+                                            marker.reference.enabled = True
+                                            markers_added += 1
+                                            logger.debug(f"  Added marker {label}: ({lon:.6f}, {lat:.6f}, {z:.2f}), accuracy={final_accuracy}m")
+                                    except (ValueError, AttributeError, TypeError) as parse_error:
+                                        logger.warning(f"  Skipping invalid marker in XML: {parse_error}")
+                                        continue
+                                
+                                logger.info(f"  ✓ Added {markers_added} markers from XML (parsed manually)")
+                                if not read_only_mode:
+                                    doc.save()
+                            except ET.ParseError as parse_err:
+                                logger.error(f"  ✗ Failed to parse XML file: {parse_err}")
+                                logger.error("  Please check the XML file format or use CSV format instead")
+                                raise
                     elif file_ext == '.csv' or file_ext == '.txt':
                         # CSV format - read and add markers manually
                         logger.info("  Detected CSV format, reading and adding markers manually")
