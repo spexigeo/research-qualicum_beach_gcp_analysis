@@ -23,7 +23,9 @@ def generate_latex_report(
     json_report_path_osm: Optional[Path] = None,
     visualization_dir_osm: Optional[Path] = None,
     shifted_metrics_no_gcps_path: Optional[Path] = None,
-    shifted_metrics_with_gcps_path: Optional[Path] = None
+    shifted_metrics_with_gcps_path: Optional[Path] = None,
+    gcp_aligned_metrics_no_gcps_path: Optional[Path] = None,
+    gcp_aligned_metrics_with_gcps_path: Optional[Path] = None
 ) -> Path:
     """
     Generate a comprehensive LaTeX report from JSON metrics and visualizations.
@@ -70,13 +72,25 @@ def generate_latex_report(
         with open(shifted_metrics_with_gcps_path, 'r') as f:
             shifted_metrics_with_gcps = json.load(f)
     
+    # Load GCP-aligned metrics if available
+    gcp_aligned_metrics_no_gcps = None
+    gcp_aligned_metrics_with_gcps = None
+    if gcp_aligned_metrics_no_gcps_path and gcp_aligned_metrics_no_gcps_path.exists():
+        with open(gcp_aligned_metrics_no_gcps_path, 'r') as f:
+            gcp_aligned_metrics_no_gcps = json.load(f)
+    if gcp_aligned_metrics_with_gcps_path and gcp_aligned_metrics_with_gcps_path.exists():
+        with open(gcp_aligned_metrics_with_gcps_path, 'r') as f:
+            gcp_aligned_metrics_with_gcps = json.load(f)
+    
     # Generate LaTeX content
     latex_path = output_path.with_suffix('.tex')
     latex_content = generate_latex_content(
         report_primary, visualization_dir, latex_path,
         report_osm=report_osm, visualization_dir_osm=visualization_dir_osm,
         shifted_metrics_no_gcps=shifted_metrics_no_gcps,
-        shifted_metrics_with_gcps=shifted_metrics_with_gcps
+        shifted_metrics_with_gcps=shifted_metrics_with_gcps,
+        gcp_aligned_metrics_no_gcps=gcp_aligned_metrics_no_gcps,
+        gcp_aligned_metrics_with_gcps=gcp_aligned_metrics_with_gcps
     )
     
     # Write LaTeX file
@@ -102,7 +116,9 @@ def generate_latex_content(
     report_osm: Optional[Dict] = None,
     visualization_dir_osm: Optional[Path] = None,
     shifted_metrics_no_gcps: Optional[Dict] = None,
-    shifted_metrics_with_gcps: Optional[Dict] = None
+    shifted_metrics_with_gcps: Optional[Dict] = None,
+    gcp_aligned_metrics_no_gcps: Optional[Dict] = None,
+    gcp_aligned_metrics_with_gcps: Optional[Dict] = None
 ) -> str:
     """Generate comprehensive LaTeX document content with ESRI and optionally OSM comparisons."""
     
@@ -737,6 +753,142 @@ The 2D shift alignment was applied to correct systematic georeferencing errors d
             latex += "For the orthomosaic with GCPs, alignment showed limited improvement.\n\n"
         
         latex += r"""This analysis demonstrates the potential for post-processing alignment corrections to improve orthomosaic accuracy, particularly when systematic georeferencing errors are present.
+
+"""
+    
+    # Alignment Method Comparison (Feature-matching vs GCP alignment)
+    if shifted_metrics_no_gcps and gcp_aligned_metrics_no_gcps:
+        latex += r"""\section{Alignment Method Comparison}
+
+Two post-processing alignment methods were evaluated: feature-matching alignment (using the ESRI basemap) and GCP-based alignment (using ground control points). This section compares their effectiveness.
+
+\subsection{Comparison of Alignment Methods}
+
+The following tables compare the results of both alignment methods:
+
+"""
+        # Comparison for orthomosaic without GCPs
+        shifted_no = shifted_metrics_no_gcps.get('overall', {})
+        gcp_aligned_no = gcp_aligned_metrics_no_gcps.get('overall', {})
+        initial_no = overall_without
+        
+        latex += r"""\begin{table}[H]
+\centering
+\caption{Alignment Method Comparison (Orthomosaic Without GCPs)}
+\begin{tabular}{lccc}
+\toprule
+Metric & Initial & Feature-Matched & GCP-Aligned \\
+\midrule
+"""
+        if initial_no.get('rmse') and shifted_no.get('rmse') and gcp_aligned_no.get('rmse'):
+            latex += f"RMSE & {initial_no['rmse']:.4f} & {shifted_no['rmse']:.4f} & {gcp_aligned_no['rmse']:.4f} \\\\\n"
+        if initial_no.get('mae') and shifted_no.get('mae') and gcp_aligned_no.get('mae'):
+            latex += f"MAE & {initial_no['mae']:.4f} & {shifted_no['mae']:.4f} & {gcp_aligned_no['mae']:.4f} \\\\\n"
+        if initial_no.get('similarity') and shifted_no.get('similarity') and gcp_aligned_no.get('similarity'):
+            latex += f"Similarity & {initial_no['similarity']:.4f} & {shifted_no['similarity']:.4f} & {gcp_aligned_no['similarity']:.4f} \\\\\n"
+        if initial_no.get('seamline_percentage') and shifted_no.get('seamline_percentage') and gcp_aligned_no.get('seamline_percentage'):
+            latex += f"Seamlines (\\%) & {initial_no['seamline_percentage']:.2f} & {shifted_no['seamline_percentage']:.2f} & {gcp_aligned_no['seamline_percentage']:.2f} \\\\\n"
+        
+        latex += r"""\bottomrule
+\end{tabular}
+\end{table}
+
+"""
+        
+        # Comparison for orthomosaic with GCPs
+        if shifted_metrics_with_gcps and gcp_aligned_metrics_with_gcps:
+            shifted_with = shifted_metrics_with_gcps.get('overall', {})
+            gcp_aligned_with = gcp_aligned_metrics_with_gcps.get('overall', {})
+            initial_with = overall_with
+            
+            latex += r"""\begin{table}[H]
+\centering
+\caption{Alignment Method Comparison (Orthomosaic With GCPs)}
+\begin{tabular}{lccc}
+\toprule
+Metric & Initial & Feature-Matched & GCP-Aligned \\
+\midrule
+"""
+            if initial_with.get('rmse') and shifted_with.get('rmse') and gcp_aligned_with.get('rmse'):
+                latex += f"RMSE & {initial_with['rmse']:.4f} & {shifted_with['rmse']:.4f} & {gcp_aligned_with['rmse']:.4f} \\\\\n"
+            if initial_with.get('mae') and shifted_with.get('mae') and gcp_aligned_with.get('mae'):
+                latex += f"MAE & {initial_with['mae']:.4f} & {shifted_with['mae']:.4f} & {gcp_aligned_with['mae']:.4f} \\\\\n"
+            if initial_with.get('similarity') and shifted_with.get('similarity') and gcp_aligned_with.get('similarity'):
+                latex += f"Similarity & {initial_with['similarity']:.4f} & {shifted_with['similarity']:.4f} & {gcp_aligned_with['similarity']:.4f} \\\\\n"
+            if initial_with.get('seamline_percentage') and shifted_with.get('seamline_percentage') and gcp_aligned_with.get('seamline_percentage'):
+                latex += f"Seamlines (\\%) & {initial_with['seamline_percentage']:.2f} & {shifted_with['seamline_percentage']:.2f} & {gcp_aligned_with['seamline_percentage']:.2f} \\\\\n"
+            
+            latex += r"""\bottomrule
+\end{tabular}
+\end{table}
+
+"""
+        
+        # Determine best method
+        latex += r"""\subsection{Best Alignment Method}
+
+"""
+        # Compare RMSE improvements
+        best_method_no = "Initial"
+        best_rmse_no = initial_no.get('rmse', float('inf'))
+        if shifted_no.get('rmse') and shifted_no['rmse'] < best_rmse_no:
+            best_rmse_no = shifted_no['rmse']
+            best_method_no = "Feature-Matched"
+        if gcp_aligned_no.get('rmse') and gcp_aligned_no['rmse'] < best_rmse_no:
+            best_rmse_no = gcp_aligned_no['rmse']
+            best_method_no = "GCP-Aligned"
+        
+        best_method_with = "Initial"
+        best_rmse_with = initial_with.get('rmse', float('inf')) if shifted_metrics_with_gcps else float('inf')
+        if shifted_metrics_with_gcps and gcp_aligned_metrics_with_gcps:
+            shifted_with = shifted_metrics_with_gcps.get('overall', {})
+            gcp_aligned_with = gcp_aligned_metrics_with_gcps.get('overall', {})
+            initial_with = overall_with
+            
+            if shifted_with.get('rmse') and shifted_with['rmse'] < best_rmse_with:
+                best_rmse_with = shifted_with['rmse']
+                best_method_with = "Feature-Matched"
+            if gcp_aligned_with.get('rmse') and gcp_aligned_with['rmse'] < best_rmse_with:
+                best_rmse_with = gcp_aligned_with['rmse']
+                best_method_with = "GCP-Aligned"
+        
+        latex += f"For the orthomosaic without GCPs, the best alignment method is \\textbf{{{best_method_no}}} with RMSE={best_rmse_no:.4f}.\n\n"
+        
+        if shifted_metrics_with_gcps and gcp_aligned_metrics_with_gcps:
+            latex += f"For the orthomosaic with GCPs, the best alignment method is \\textbf{{{best_method_with}}} with RMSE={best_rmse_with:.4f}.\n\n"
+        
+        # Overall recommendation
+        if best_method_no == "GCP-Aligned" or (shifted_metrics_with_gcps and best_method_with == "GCP-Aligned"):
+            latex += r"""\textbf{Recommendation: GCP-based alignment provides the best results.}
+
+GCP-based alignment leverages the known ground truth coordinates of control points, providing a more accurate georeferencing solution than feature-matching against basemaps. This method is particularly effective when:
+\begin{itemize}
+    \item High-accuracy GCPs are available and well-distributed
+    \item Absolute georeferencing accuracy is critical
+    \item The orthomosaic needs to match survey-grade coordinates
+\end{itemize}
+
+"""
+        elif best_method_no == "Feature-Matched" or (shifted_metrics_with_gcps and best_method_with == "Feature-Matched"):
+            latex += r"""\textbf{Recommendation: Feature-matching alignment provides the best results.}
+
+Feature-matching alignment against the ESRI basemap provides good results when:
+\begin{itemize}
+    \item GCPs are not available or are insufficiently distributed
+    \item The basemap provides high-quality reference imagery
+    \item Relative alignment is more important than absolute accuracy
+\end{itemize}
+
+"""
+        else:
+            latex += r"""\textbf{Recommendation: Initial orthomosaic alignment is sufficient.}
+
+The initial orthomosaic alignment (without post-processing) provides the best results, suggesting that:
+\begin{itemize}
+    \item The original georeferencing is already accurate
+    \item Post-processing alignment may introduce errors
+    \item Additional alignment steps are not necessary
+\end{itemize}
 
 """
     

@@ -799,3 +799,228 @@ def apply_2d_shift_to_orthomosaic(
     
     return output_path, shift_info
 
+
+def align_orthomosaic_to_gcps(
+    ortho_path: Path,
+    reference_path: Path,
+    gcps: List[Dict],
+    output_path: Path
+) -> Tuple[Path, Dict]:
+    """
+    Align an orthomosaic to ground control points by computing a transformation
+    from GCP positions in the orthomosaic to their known coordinates.
+    
+    Args:
+        ortho_path: Path to orthomosaic GeoTIFF
+        reference_path: Path to reference basemap GeoTIFF (for CRS and bounds)
+        gcps: List of GCP dictionaries with 'lat', 'lon', and optionally 'z' keys
+        output_path: Path to save aligned orthomosaic
+        
+    Returns:
+        Tuple of (output_path, alignment_info_dict)
+    """
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    logger.info(f"Aligning orthomosaic to {len(gcps)} GCPs...")
+    
+    # Reproject orthomosaic to match reference first
+    logger.info("Reprojecting orthomosaic to match reference...")
+    ortho_reproj, metadata = reproject_to_match(ortho_path, reference_path)
+    
+    # Load reference for CRS and transform
+    with rasterio.open(reference_path) as ref:
+        ref_transform = ref.transform
+        ref_crs = ref.crs
+        ref_width = ref.width
+        ref_height = ref.height
+    
+    # Convert GCP lat/lon to pixel coordinates in reference
+    from rasterio.transform import xy
+    
+    gcp_pairs = []
+    for gcp in gcps:
+        lat = gcp.get('lat')
+        lon = gcp.get('lon')
+        
+        if lat is None or lon is None:
+            logger.warning(f"Skipping GCP {gcp.get('id', 'unknown')}: missing lat/lon")
+            continue
+        
+        # Convert GCP coordinates to pixel coordinates in reference
+        try:
+            # Use rowcol to get pixel coordinates from geographic coordinates
+            ref_row, ref_col = rasterio.transform.rowcol(ref_transform, lon, lat)
+            
+            # Also get pixel coordinates in orthomosaic (using the reprojected transform)
+            ortho_transform = metadata['transform']
+            ortho_row, ortho_col = rasterio.transform.rowcol(ortho_transform, lon, lat)
+            
+            # Check if coordinates are within bounds
+            if (0 <= ref_row < ref_height and 0 <= ref_col < ref_width and
+                0 <= ortho_row < ortho_reproj.shape[1] and 0 <= ortho_col < ortho_reproj.shape[2]):
+                gcp_pairs.append({
+                    'id': gcp.get('id', 'unknown'),
+                    'ortho_pixel': (ortho_col, ortho_row),  # (x, y) in pixels
+                    'ref_pixel': (ref_col, ref_row),  # (x, y) in pixels
+                    'lat': lat,
+                    'lon': lon
+                })
+            else:
+                logger.debug(f"GCP {gcp.get('id', 'unknown')} outside image bounds, skipping")
+        except Exception as e:
+            logger.warning(f"Could not convert GCP {gcp.get('id', 'unknown')} to pixel coordinates: {e}")
+            continue
+    
+    if len(gcp_pairs) < 3:
+        logger.error(f"Need at least 3 GCPs for alignment, but only {len(gcp_pairs)} are valid")
+        raise ValueError(f"Insufficient GCPs for alignment: {len(gcp_pairs)} < 3")
+    
+    logger.info(f"Using {len(gcp_pairs)} GCPs for alignment")
+    
+    # Compute affine transformation from ortho pixels to ref pixels
+    # We'll use a least-squares approach to solve for the transformation matrix
+    # Affine transformation: [x'] = [a b c] [x]
+    #                        [y']   [d e f] [y]
+    #                                        [1]
+    
+    # Build matrices for least squares
+    ortho_coords = np.array([[p['ortho_pixel'][0], p['ortho_pixel'][1], 1] for p in gcp_pairs])
+    ref_coords_x = np.array([p['ref_pixel'][0] for p in gcp_pairs])
+    ref_coords_y = np.array([p['ref_pixel'][1] for p in gcp_pairs])
+    
+    # Solve for transformation parameters
+    try:
+        # Solve for X transformation: ref_x = a*ortho_x + b*ortho_y + c
+        params_x, residuals_x, rank_x, s_x = np.linalg.lstsq(ortho_coords, ref_coords_x, rcond=None)
+        
+        # Solve for Y transformation: ref_y = d*ortho_x + e*ortho_y + f
+        params_y, residuals_y, rank_y, s_y = np.linalg.lstsq(ortho_coords, ref_coords_y, rcond=None)
+        
+        # Extract transformation parameters
+        a, b, c = params_x
+        d, e, f = params_y
+        
+        # Compute transformation error
+        predicted_x = ortho_coords @ params_x
+        predicted_y = ortho_coords @ params_y
+        errors_x = ref_coords_x - predicted_x
+        errors_y = ref_coords_y - predicted_y
+        rmse_x = np.sqrt(np.mean(errors_x**2))
+        rmse_y = np.sqrt(np.mean(errors_y**2))
+        rmse_total = np.sqrt(rmse_x**2 + rmse_y**2)
+        
+        logger.info(f"Affine transformation computed:")
+        logger.info(f"  X: {a:.6f}*x + {b:.6f}*y + {c:.6f}")
+        logger.info(f"  Y: {d:.6f}*x + {e:.6f}*y + {f:.6f}")
+        logger.info(f"  RMSE: X={rmse_x:.2f} px, Y={rmse_y:.2f} px, Total={rmse_total:.2f} px")
+        
+    except np.linalg.LinAlgError as e:
+        logger.error(f"Failed to compute affine transformation: {e}")
+        raise ValueError(f"Could not compute transformation from GCPs: {e}")
+    
+    # Apply transformation to orthomosaic
+    # We computed T: ortho -> ref, but for resampling we need T^-1: ref -> ortho
+    # For affine transformation [x'] = [a b c] [x], the inverse is:
+    #                        [y']   [d e f] [y]
+    #                                        [1]
+    # [x] = 1/(ae-bd) * [e -b] [x' - c]
+    # [y]              [-d  a] [y' - f]
+    
+    det = a * e - b * d
+    if abs(det) < 1e-10:
+        logger.warning("Transformation matrix is singular, using identity transformation")
+        a_inv, b_inv, c_inv = 1.0, 0.0, 0.0
+        d_inv, e_inv, f_inv = 0.0, 1.0, 0.0
+    else:
+        # Compute inverse transformation
+        a_inv = e / det
+        b_inv = -b / det
+        c_inv = (b * f - c * e) / det
+        d_inv = -d / det
+        e_inv = a / det
+        f_inv = (c * d - a * f) / det
+    
+    # Create output array matching reference dimensions
+    aligned_ortho = np.zeros((ortho_reproj.shape[0], ref_height, ref_width), dtype=ortho_reproj.dtype)
+    
+    # Create coordinate grids for output (reference) space
+    ref_x, ref_y = np.meshgrid(np.arange(ref_width), np.arange(ref_height))
+    
+    # Apply inverse transformation to find source coordinates in orthomosaic
+    ortho_h, ortho_w = ortho_reproj.shape[1], ortho_reproj.shape[2]
+    ortho_x = a_inv * ref_x + b_inv * ref_y + c_inv
+    ortho_y = d_inv * ref_x + e_inv * ref_y + f_inv
+    
+    # Use scipy for interpolation if available
+    try:
+        from scipy.ndimage import map_coordinates
+        use_scipy = True
+    except ImportError:
+        use_scipy = False
+        logger.warning("scipy not available. Using nearest neighbor interpolation.")
+    
+    for band_idx in range(ortho_reproj.shape[0]):
+        band = ortho_reproj[band_idx]
+        
+        if use_scipy:
+            # Use map_coordinates for sub-pixel interpolation
+            # Stack coordinates: (2, height, width) where first is y (row), second is x (col)
+            coords = np.stack([ortho_y.ravel(), ortho_x.ravel()], axis=0)
+            
+            # Reshape to (2, height, width)
+            coords = coords.reshape(2, ref_height, ref_width)
+            
+            # Map coordinates (note: map_coordinates uses (row, col) = (y, x))
+            aligned_band = map_coordinates(
+                band,
+                coords,
+                order=1,  # Bilinear interpolation
+                mode='constant',
+                cval=0.0,
+                prefilter=False
+            )
+        else:
+            # Nearest neighbor fallback
+            ortho_x_int = np.clip(np.round(ortho_x).astype(int), 0, ortho_w - 1)
+            ortho_y_int = np.clip(np.round(ortho_y).astype(int), 0, ortho_h - 1)
+            
+            # Map using advanced indexing
+            aligned_band = np.zeros((ref_height, ref_width), dtype=band.dtype)
+            valid_mask = (ortho_x >= 0) & (ortho_x < ortho_w) & (ortho_y >= 0) & (ortho_y < ortho_h)
+            aligned_band[valid_mask] = band[ortho_y_int[valid_mask], ortho_x_int[valid_mask]]
+        
+        aligned_ortho[band_idx] = aligned_band
+    
+    # Save aligned orthomosaic (using reference transform and CRS)
+    with rasterio.open(
+        output_path,
+        'w',
+        driver='GTiff',
+        height=ref_height,
+        width=ref_width,
+        count=ortho_reproj.shape[0],
+        dtype=ortho_reproj.dtype,
+        crs=ref_crs,
+        transform=ref_transform,
+        compress='lzw'
+    ) as dst:
+        dst.write(aligned_ortho)
+    
+    alignment_info = {
+        'num_gcps_used': len(gcp_pairs),
+        'transformation_params': {
+            'a': float(a), 'b': float(b), 'c': float(c),
+            'd': float(d), 'e': float(e), 'f': float(f)
+        },
+        'rmse_x_pixels': float(rmse_x),
+        'rmse_y_pixels': float(rmse_y),
+        'rmse_total_pixels': float(rmse_total),
+        'output_path': str(output_path)
+    }
+    
+    logger.info(f"Aligned orthomosaic saved to: {output_path}")
+    logger.info(f"Alignment RMSE: {rmse_total:.2f} pixels")
+    
+    return output_path, alignment_info
+
