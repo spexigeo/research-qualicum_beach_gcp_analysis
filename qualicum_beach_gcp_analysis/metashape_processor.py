@@ -272,11 +272,11 @@ def process_orthomosaic(
     compression.tiff_overviews = True
     compression.tiff_tiled = True
     
-        # Check if project exists and load it, or create new one
-        project_exists = project_path.exists()
-        
-        # Use context manager to redirect MetaShape output to log file
-        with redirect_metashape_output(log_file_path):
+    # Check if project exists and load it, or create new one
+    project_exists = project_path.exists()
+    
+    # Use context manager to redirect MetaShape output to log file
+    with redirect_metashape_output(log_file_path):
             if project_exists and not clean_intermediate_files:
                 logger.info(f"📂 Loading existing project: {project_path}")
                 doc = Metashape.Document()
