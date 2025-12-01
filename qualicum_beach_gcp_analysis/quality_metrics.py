@@ -9,6 +9,7 @@ import numpy as np
 import rasterio
 from rasterio.warp import calculate_default_transform, reproject, Resampling
 from rasterio.enums import Resampling as RasterioResampling
+from rasterio import Affine
 from pathlib import Path
 from typing import Dict, Tuple, Optional, List
 import logging
@@ -593,4 +594,162 @@ def compare_orthomosaic_to_basemap(
     logger.info(f"Comparison complete. Overall RMSE: {metrics.get('overall', {}).get('rmse', 'N/A')}")
     
     return metrics
+
+
+def apply_2d_shift_to_orthomosaic(
+    ortho_path: Path,
+    reference_path: Path,
+    output_path: Path,
+    shift_x: Optional[float] = None,
+    shift_y: Optional[float] = None
+) -> Tuple[Path, Dict]:
+    """
+    Apply a 2D shift to an orthomosaic to align it with a reference basemap.
+    
+    If shift_x and shift_y are not provided, they will be computed using feature matching.
+    
+    Args:
+        ortho_path: Path to orthomosaic GeoTIFF
+        reference_path: Path to reference basemap GeoTIFF
+        output_path: Path to save shifted orthomosaic
+        shift_x: Optional X offset in pixels (positive = shift right)
+        shift_y: Optional Y offset in pixels (positive = shift down)
+        
+    Returns:
+        Tuple of (output_path, shift_info_dict)
+    """
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Reproject orthomosaic to match reference first
+    logger.info(f"Reprojecting orthomosaic to match reference...")
+    ortho_reproj, metadata = reproject_to_match(ortho_path, reference_path)
+    
+    # Load reference for feature matching if shift not provided
+    with rasterio.open(reference_path) as ref:
+        reference_array = ref.read()
+        ref_transform = ref.transform
+        ref_crs = ref.crs
+        ref_width = ref.width
+        ref_height = ref.height
+    
+    # Compute shift if not provided
+    if shift_x is None or shift_y is None:
+        logger.info("Computing 2D shift using feature matching...")
+        # Use first band for feature matching
+        ortho_band = ortho_reproj[0] if len(ortho_reproj.shape) == 3 else ortho_reproj
+        ref_band = reference_array[0] if len(reference_array.shape) == 3 else reference_array
+        
+        # Compute feature matching to get offset
+        errors_2d = compute_feature_matching_2d_error(ortho_band, ref_band)
+        
+        if errors_2d.get('mean_offset_x') is not None and errors_2d.get('mean_offset_y') is not None:
+            shift_x = errors_2d['mean_offset_x']
+            shift_y = errors_2d['mean_offset_y']
+            logger.info(f"Computed shift: X={shift_x:.2f} px, Y={shift_y:.2f} px")
+        else:
+            logger.warning("Could not compute shift from feature matching. Using zero shift.")
+            shift_x = 0.0
+            shift_y = 0.0
+    else:
+        logger.info(f"Using provided shift: X={shift_x:.2f} px, Y={shift_y:.2f} px")
+    
+    # Apply shift using scipy.ndimage.shift for sub-pixel accuracy, or numpy for integer shifts
+    try:
+        from scipy.ndimage import shift as ndimage_shift
+        use_scipy = True
+    except ImportError:
+        use_scipy = False
+        logger.warning("scipy not available. Using integer pixel shifts only.")
+    
+    shift_x_int = int(round(shift_x))
+    shift_y_int = int(round(shift_y))
+    
+    # Apply shift to each band
+    shifted_ortho = np.zeros_like(ortho_reproj)
+    
+    for band_idx in range(ortho_reproj.shape[0]):
+        band = ortho_reproj[band_idx]
+        
+        if use_scipy and (abs(shift_x - shift_x_int) > 0.01 or abs(shift_y - shift_y_int) > 0.01):
+            # Use scipy for sub-pixel shifts
+            shifted_band = ndimage_shift(band, (shift_y, shift_x), order=1, mode='constant', cval=0.0)
+        else:
+            # Use numpy for integer shifts
+            if shift_x_int != 0 or shift_y_int != 0:
+                # Create a new array with zeros
+                shifted_band = np.zeros_like(band)
+                
+                # Calculate valid source and destination regions
+                if shift_x_int > 0:
+                    src_x = slice(0, band.shape[1] - shift_x_int)
+                    dst_x = slice(shift_x_int, band.shape[1])
+                elif shift_x_int < 0:
+                    src_x = slice(-shift_x_int, band.shape[1])
+                    dst_x = slice(0, band.shape[1] + shift_x_int)
+                else:
+                    src_x = slice(None)
+                    dst_x = slice(None)
+                
+                if shift_y_int > 0:
+                    src_y = slice(0, band.shape[0] - shift_y_int)
+                    dst_y = slice(shift_y_int, band.shape[0])
+                elif shift_y_int < 0:
+                    src_y = slice(-shift_y_int, band.shape[0])
+                    dst_y = slice(0, band.shape[0] + shift_y_int)
+                else:
+                    src_y = slice(None)
+                    dst_y = slice(None)
+                
+                # Copy valid region
+                if src_x != slice(None) or src_y != slice(None):
+                    shifted_band[dst_y, dst_x] = band[src_y, src_x]
+                else:
+                    shifted_band = band.copy()
+            else:
+                shifted_band = band.copy()
+        
+        shifted_ortho[band_idx] = shifted_band
+    
+    # Update transform to account for shift
+    # Shift in pixels needs to be converted to geographic coordinates
+    pixel_size_x = abs(ref_transform[0])  # Pixel width
+    pixel_size_y = abs(ref_transform[4])  # Pixel height (usually negative)
+    
+    # Adjust transform origin
+    new_transform = Affine(
+        ref_transform[0], ref_transform[1],
+        ref_transform[2] - shift_x * pixel_size_x,  # Adjust X origin
+        ref_transform[3], ref_transform[4],
+        ref_transform[5] - shift_y * abs(pixel_size_y)  # Adjust Y origin (note: Y is usually negative)
+    )
+    
+    # Save shifted orthomosaic
+    with rasterio.open(
+        output_path,
+        'w',
+        driver='GTiff',
+        height=ref_height,
+        width=ref_width,
+        count=ortho_reproj.shape[0],
+        dtype=ortho_reproj.dtype,
+        crs=ref_crs,
+        transform=new_transform,
+        compress='lzw'
+    ) as dst:
+        dst.write(shifted_ortho)
+    
+    shift_info = {
+        'shift_x_pixels': float(shift_x),
+        'shift_y_pixels': float(shift_y),
+        'shift_x_geographic': float(shift_x * pixel_size_x),
+        'shift_y_geographic': float(shift_y * abs(pixel_size_y)),
+        'output_path': str(output_path)
+    }
+    
+    logger.info(f"Applied 2D shift and saved shifted orthomosaic to: {output_path}")
+    logger.info(f"Shift: ({shift_x:.2f}, {shift_y:.2f}) pixels = "
+                f"({shift_x * pixel_size_x:.4f}, {shift_y * abs(pixel_size_y):.4f}) geographic units")
+    
+    return output_path, shift_info
 

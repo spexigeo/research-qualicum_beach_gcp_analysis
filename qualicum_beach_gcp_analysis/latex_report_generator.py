@@ -21,7 +21,9 @@ def generate_latex_report(
     output_path: Path,
     visualization_dir: Optional[Path] = None,
     json_report_path_osm: Optional[Path] = None,
-    visualization_dir_osm: Optional[Path] = None
+    visualization_dir_osm: Optional[Path] = None,
+    shifted_metrics_no_gcps_path: Optional[Path] = None,
+    shifted_metrics_with_gcps_path: Optional[Path] = None
 ) -> Path:
     """
     Generate a comprehensive LaTeX report from JSON metrics and visualizations.
@@ -58,11 +60,23 @@ def generate_latex_report(
     if visualization_dir_osm:
         visualization_dir_osm = Path(visualization_dir_osm)
     
+    # Load shifted metrics if available
+    shifted_metrics_no_gcps = None
+    shifted_metrics_with_gcps = None
+    if shifted_metrics_no_gcps_path and shifted_metrics_no_gcps_path.exists():
+        with open(shifted_metrics_no_gcps_path, 'r') as f:
+            shifted_metrics_no_gcps = json.load(f)
+    if shifted_metrics_with_gcps_path and shifted_metrics_with_gcps_path.exists():
+        with open(shifted_metrics_with_gcps_path, 'r') as f:
+            shifted_metrics_with_gcps = json.load(f)
+    
     # Generate LaTeX content
     latex_path = output_path.with_suffix('.tex')
     latex_content = generate_latex_content(
         report_primary, visualization_dir, latex_path,
-        report_osm=report_osm, visualization_dir_osm=visualization_dir_osm
+        report_osm=report_osm, visualization_dir_osm=visualization_dir_osm,
+        shifted_metrics_no_gcps=shifted_metrics_no_gcps,
+        shifted_metrics_with_gcps=shifted_metrics_with_gcps
     )
     
     # Write LaTeX file
@@ -86,7 +100,9 @@ def generate_latex_content(
     visualization_dir: Path, 
     latex_path: Path,
     report_osm: Optional[Dict] = None,
-    visualization_dir_osm: Optional[Path] = None
+    visualization_dir_osm: Optional[Path] = None,
+    shifted_metrics_no_gcps: Optional[Dict] = None,
+    shifted_metrics_with_gcps: Optional[Dict] = None
 ) -> str:
     """Generate comprehensive LaTeX document content with ESRI and optionally OSM comparisons."""
     
@@ -592,6 +608,137 @@ Hotter colors indicate larger errors.}
             latex += f"Without GCPs: {errors_2d_without['rmse_2d_pixels']:.2f} pixels RMSE. "
         if errors_2d_with.get('rmse_2d_pixels'):
             latex += f"With GCPs: {errors_2d_with['rmse_2d_pixels']:.2f} pixels RMSE.\n\n"
+    
+    # 2D Shift Alignment Analysis
+    if shifted_metrics_no_gcps and shifted_metrics_with_gcps:
+        latex += r"""\section{2D Shift Alignment Analysis}
+
+After the initial comparison, 2D shifts were applied to align the orthomosaics with the ESRI basemap using feature matching. This section compares the results before and after alignment.
+
+\subsection{Shift Parameters}
+
+The feature matching algorithm computed the following pixel offsets to align each orthomosaic:
+
+"""
+        # Get shift info from metrics if available
+        shifted_overall_no_gcps = shifted_metrics_no_gcps.get('overall', {})
+        shifted_overall_with_gcps = shifted_metrics_with_gcps.get('overall', {})
+        
+        errors_2d_shifted_no = shifted_overall_no_gcps.get('errors_2d', {})
+        errors_2d_shifted_with = shifted_overall_with_gcps.get('errors_2d', {})
+        
+        if errors_2d_shifted_no.get('mean_offset_x_pixels') is not None:
+            latex += r"""\begin{table}[H]
+\centering
+\caption{2D Shift Parameters Applied}
+\begin{tabular}{lcc}
+\toprule
+Orthomosaic & X Shift (px) & Y Shift (px) \\
+\midrule
+"""
+            if errors_2d_shifted_no.get('mean_offset_x_pixels') is not None:
+                latex += f"Without GCPs & {errors_2d_shifted_no.get('mean_offset_x_pixels', 0):.2f} & {errors_2d_shifted_no.get('mean_offset_y_pixels', 0):.2f} \\\\\n"
+            if errors_2d_shifted_with.get('mean_offset_x_pixels') is not None:
+                latex += f"With GCPs & {errors_2d_shifted_with.get('mean_offset_x_pixels', 0):.2f} & {errors_2d_shifted_with.get('mean_offset_y_pixels', 0):.2f} \\\\\n"
+            latex += r"""\bottomrule
+\end{tabular}
+\end{table}
+
+"""
+        
+        # Compare initial vs shifted metrics
+        latex += r"""\subsection{Comparison: Initial vs. Shifted Results}
+
+The following table compares key metrics before and after applying 2D shift alignment:
+
+\begin{table}[H]
+\centering
+\caption{Initial vs. Shifted Metrics Comparison (Without GCPs)}
+\begin{tabular}{lccc}
+\toprule
+Metric & Initial & Shifted & Improvement \\
+\midrule
+"""
+        initial_no = overall_without
+        shifted_no = shifted_overall_no_gcps
+        
+        if initial_no.get('rmse') and shifted_no.get('rmse'):
+            rmse_imp = ((initial_no['rmse'] - shifted_no['rmse']) / initial_no['rmse']) * 100
+            latex += f"RMSE & {initial_no['rmse']:.4f} & {shifted_no['rmse']:.4f} & {rmse_imp:+.2f}\\% \\\\\n"
+        if initial_no.get('mae') and shifted_no.get('mae'):
+            mae_imp = ((initial_no['mae'] - shifted_no['mae']) / initial_no['mae']) * 100
+            latex += f"MAE & {initial_no['mae']:.4f} & {shifted_no['mae']:.4f} & {mae_imp:+.2f}\\% \\\\\n"
+        if initial_no.get('similarity') and shifted_no.get('similarity'):
+            sim_imp = ((shifted_no['similarity'] - initial_no['similarity']) / initial_no['similarity']) * 100
+            latex += f"Similarity & {initial_no['similarity']:.4f} & {shifted_no['similarity']:.4f} & {sim_imp:+.2f}\\% \\\\\n"
+        if initial_no.get('seamline_percentage') and shifted_no.get('seamline_percentage'):
+            seam_imp = initial_no['seamline_percentage'] - shifted_no['seamline_percentage']
+            latex += f"Seamlines (\\%) & {initial_no['seamline_percentage']:.2f} & {shifted_no['seamline_percentage']:.2f} & {seam_imp:+.2f}\\% \\\\\n"
+        
+        latex += r"""\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{Initial vs. Shifted Metrics Comparison (With GCPs)}
+\begin{tabular}{lccc}
+\toprule
+Metric & Initial & Shifted & Improvement \\
+\midrule
+"""
+        initial_with = overall_with
+        shifted_with = shifted_overall_with_gcps
+        
+        if initial_with.get('rmse') and shifted_with.get('rmse'):
+            rmse_imp = ((initial_with['rmse'] - shifted_with['rmse']) / initial_with['rmse']) * 100
+            latex += f"RMSE & {initial_with['rmse']:.4f} & {shifted_with['rmse']:.4f} & {rmse_imp:+.2f}\\% \\\\\n"
+        if initial_with.get('mae') and shifted_with.get('mae'):
+            mae_imp = ((initial_with['mae'] - shifted_with['mae']) / initial_with['mae']) * 100
+            latex += f"MAE & {initial_with['mae']:.4f} & {shifted_with['mae']:.4f} & {mae_imp:+.2f}\\% \\\\\n"
+        if initial_with.get('similarity') and shifted_with.get('similarity'):
+            sim_imp = ((shifted_with['similarity'] - initial_with['similarity']) / initial_with['similarity']) * 100
+            latex += f"Similarity & {initial_with['similarity']:.4f} & {shifted_with['similarity']:.4f} & {sim_imp:+.2f}\\% \\\\\n"
+        if initial_with.get('seamline_percentage') and shifted_with.get('seamline_percentage'):
+            seam_imp = initial_with['seamline_percentage'] - shifted_with['seamline_percentage']
+            latex += f"Seamlines (\\%) & {initial_with['seamline_percentage']:.2f} & {shifted_with['seamline_percentage']:.2f} & {seam_imp:+.2f}\\% \\\\\n"
+        
+        latex += r"""\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Impact of 2D Shift Alignment}
+
+The 2D shift alignment was applied to correct systematic georeferencing errors detected through feature matching. The results show:
+
+"""
+        # Analyze improvements
+        improvements_no = []
+        improvements_with = []
+        
+        if initial_no.get('rmse') and shifted_no.get('rmse') and shifted_no['rmse'] < initial_no['rmse']:
+            improvements_no.append("reduced RMSE")
+        if initial_no.get('seamline_percentage') and shifted_no.get('seamline_percentage') and shifted_no['seamline_percentage'] < initial_no['seamline_percentage']:
+            improvements_no.append("reduced seamline artifacts")
+        
+        if initial_with.get('rmse') and shifted_with.get('rmse') and shifted_with['rmse'] < initial_with['rmse']:
+            improvements_with.append("reduced RMSE")
+        if initial_with.get('seamline_percentage') and shifted_with.get('seamline_percentage') and shifted_with['seamline_percentage'] < initial_with['seamline_percentage']:
+            improvements_with.append("reduced seamline artifacts")
+        
+        if improvements_no:
+            latex += f"For the orthomosaic without GCPs, alignment resulted in: {', '.join(improvements_no)}.\n\n"
+        else:
+            latex += "For the orthomosaic without GCPs, alignment showed limited improvement.\n\n"
+        
+        if improvements_with:
+            latex += f"For the orthomosaic with GCPs, alignment resulted in: {', '.join(improvements_with)}.\n\n"
+        else:
+            latex += "For the orthomosaic with GCPs, alignment showed limited improvement.\n\n"
+        
+        latex += r"""This analysis demonstrates the potential for post-processing alignment corrections to improve orthomosaic accuracy, particularly when systematic georeferencing errors are present.
+
+"""
     
     # Comprehensive Recommendations
     latex += r"""\section{Comprehensive Analysis and Recommendations}
