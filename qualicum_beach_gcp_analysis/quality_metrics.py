@@ -834,9 +834,29 @@ def align_orthomosaic_to_gcps(
         ref_crs = ref.crs
         ref_width = ref.width
         ref_height = ref.height
+        reference_array = ref.read()
     
-    # Convert GCP lat/lon to pixel coordinates in reference
+    # Convert GCP lat/lon to pixel coordinates
+    # For the reference: GCPs should be at their known coordinates
+    # For the orthomosaic: We need to find where GCPs actually appear (they may be misaligned)
     gcp_pairs = []
+    
+    # Get first band for feature detection
+    ortho_band = ortho_reproj[0] if len(ortho_reproj.shape) == 3 else ortho_reproj
+    ref_band = reference_array[0] if len(reference_array.shape) == 3 else reference_array
+    
+    # Normalize images for feature matching
+    def normalize_to_uint8(arr):
+        arr_min, arr_max = arr.min(), arr.max()
+        if arr_max > arr_min:
+            normalized = ((arr - arr_min) / (arr_max - arr_min) * 255).astype(np.uint8)
+        else:
+            normalized = np.zeros_like(arr, dtype=np.uint8)
+        return normalized
+    
+    ortho_norm = normalize_to_uint8(ortho_band)
+    ref_norm = normalize_to_uint8(ref_band)
+    
     for gcp in gcps:
         lat = gcp.get('lat')
         lon = gcp.get('lon')
@@ -845,29 +865,89 @@ def align_orthomosaic_to_gcps(
             logger.warning(f"Skipping GCP {gcp.get('id', 'unknown')}: missing lat/lon")
             continue
         
-        # Convert GCP coordinates to pixel coordinates in reference
+        # Convert GCP coordinates to pixel coordinates in reference (where they should be)
         try:
-            # Use rowcol to get pixel coordinates from geographic coordinates
             ref_row, ref_col = rasterio.transform.rowcol(ref_transform, lon, lat)
             
-            # Also get pixel coordinates in orthomosaic (using the reprojected transform)
-            ortho_transform = metadata['transform']
-            ortho_row, ortho_col = rasterio.transform.rowcol(ortho_transform, lon, lat)
+            # Check if reference coordinates are within bounds
+            if not (0 <= ref_row < ref_height and 0 <= ref_col < ref_width):
+                logger.debug(f"GCP {gcp.get('id', 'unknown')} outside reference bounds, skipping")
+                continue
             
-            # Check if coordinates are within bounds
-            if (0 <= ref_row < ref_height and 0 <= ref_col < ref_width and
-                0 <= ortho_row < ortho_reproj.shape[1] and 0 <= ortho_col < ortho_reproj.shape[2]):
+            # Find where this GCP actually appears in the orthomosaic using template matching
+            # Extract a small template around the GCP location in the reference
+            template_size = 50  # pixels
+            half_size = template_size // 2
+            
+            # Get template from reference (where GCP should be)
+            ref_y_start = max(0, int(ref_row) - half_size)
+            ref_y_end = min(ref_height, int(ref_row) + half_size)
+            ref_x_start = max(0, int(ref_col) - half_size)
+            ref_x_end = min(ref_width, int(ref_col) + half_size)
+            
+            if ref_y_end - ref_y_start < template_size // 2 or ref_x_end - ref_x_start < template_size // 2:
+                logger.debug(f"GCP {gcp.get('id', 'unknown')} too close to reference edge, skipping")
+                continue
+            
+            template = ref_norm[ref_y_start:ref_y_end, ref_x_start:ref_x_end]
+            
+            # Find template in orthomosaic using phase correlation or template matching
+            ortho_row, ortho_col = None, None
+            
+            if SKIMAGE_AVAILABLE:
+                try:
+                    from skimage.feature import match_template
+                    # Search in a region around the expected location
+                    search_margin = 200  # pixels
+                    ortho_transform = metadata['transform']
+                    expected_row, expected_col = rasterio.transform.rowcol(ortho_transform, lon, lat)
+                    
+                    search_y_start = max(0, int(expected_row) - search_margin)
+                    search_y_end = min(ortho_norm.shape[0], int(expected_row) + search_margin)
+                    search_x_start = max(0, int(expected_col) - search_margin)
+                    search_x_end = min(ortho_norm.shape[1], int(expected_col) + search_margin)
+                    
+                    if (search_y_end - search_y_start > template.shape[0] and 
+                        search_x_end - search_x_start > template.shape[1]):
+                        search_region = ortho_norm[search_y_start:search_y_end, search_x_start:search_x_end]
+                        result = match_template(search_region, template)
+                        ij = np.unravel_index(np.argmax(result), result.shape)
+                        
+                        # Convert back to full orthomosaic coordinates
+                        ortho_row = search_y_start + ij[0] + template.shape[0] // 2
+                        ortho_col = search_x_start + ij[1] + template.shape[1] // 2
+                        
+                        match_confidence = result[ij]
+                        offset_x = ortho_col - expected_col
+                        offset_y = ortho_row - expected_row
+                        logger.info(f"GCP {gcp.get('id', 'unknown')}: found at ({ortho_col:.1f}, {ortho_row:.1f}) "
+                                   f"(expected: ({expected_col:.1f}, {expected_row:.1f}), "
+                                   f"offset: ({offset_x:.1f}, {offset_y:.1f}) px, confidence: {match_confidence:.3f})")
+                    else:
+                        # Fallback: use expected location
+                        ortho_row, ortho_col = expected_row, expected_col
+                except Exception as e:
+                    logger.debug(f"Template matching failed for GCP {gcp.get('id', 'unknown')}: {e}, using expected location")
+                    ortho_transform = metadata['transform']
+                    ortho_row, ortho_col = rasterio.transform.rowcol(ortho_transform, lon, lat)
+            else:
+                # Fallback: use expected location from transform
+                ortho_transform = metadata['transform']
+                ortho_row, ortho_col = rasterio.transform.rowcol(ortho_transform, lon, lat)
+            
+            # Check if orthomosaic coordinates are within bounds
+            if (0 <= ortho_row < ortho_reproj.shape[1] and 0 <= ortho_col < ortho_reproj.shape[2]):
                 gcp_pairs.append({
                     'id': gcp.get('id', 'unknown'),
-                    'ortho_pixel': (ortho_col, ortho_row),  # (x, y) in pixels
-                    'ref_pixel': (ref_col, ref_row),  # (x, y) in pixels
+                    'ortho_pixel': (ortho_col, ortho_row),  # (x, y) in pixels - where GCP actually appears
+                    'ref_pixel': (ref_col, ref_row),  # (x, y) in pixels - where GCP should be
                     'lat': lat,
                     'lon': lon
                 })
             else:
-                logger.debug(f"GCP {gcp.get('id', 'unknown')} outside image bounds, skipping")
+                logger.debug(f"GCP {gcp.get('id', 'unknown')} outside orthomosaic bounds, skipping")
         except Exception as e:
-            logger.warning(f"Could not convert GCP {gcp.get('id', 'unknown')} to pixel coordinates: {e}")
+            logger.warning(f"Could not process GCP {gcp.get('id', 'unknown')}: {e}")
             continue
     
     if len(gcp_pairs) < 3:
