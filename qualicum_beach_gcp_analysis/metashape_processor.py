@@ -188,7 +188,7 @@ def process_orthomosaic(
     depth_map_quality: int = DepthMapQuality.MediumQuality,
     tiepoint_limit: int = 10000,
     use_gcps: bool = False,
-    gcp_accuracy: float = 0.01
+    gcp_accuracy: float = 0.05
 ) -> Dict:
     """
     Process orthomosaic using MetaShape.
@@ -206,7 +206,8 @@ def process_orthomosaic(
         tiepoint_limit: Maximum number of tie points
         use_gcps: Whether to use GCPs in processing
         gcp_accuracy: Accuracy of GCPs in meters. Lower values = higher weight in bundle adjustment.
-                     Default 0.01m (1cm) gives very high weight. Use 0.001m (1mm) for extremely high accuracy GCPs.
+                     Default 0.05m (5cm) gives high weight. Use 0.01m (1cm) for very high accuracy GCPs,
+                     or 0.10m (10cm) for lower accuracy GCPs.
         
     Returns:
         Dictionary with processing results and statistics
