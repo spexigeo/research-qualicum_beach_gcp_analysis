@@ -19,33 +19,51 @@ logger = logging.getLogger(__name__)
 def generate_latex_report(
     json_report_path: Path,
     output_path: Path,
-    visualization_dir: Optional[Path] = None
+    visualization_dir: Optional[Path] = None,
+    json_report_path_osm: Optional[Path] = None,
+    visualization_dir_osm: Optional[Path] = None
 ) -> Path:
     """
-    Generate a LaTeX report from JSON metrics and visualizations.
+    Generate a comprehensive LaTeX report from JSON metrics and visualizations.
+    Can include both ESRI and OSM basemap comparisons.
     
     Args:
-        json_report_path: Path to JSON report
+        json_report_path: Path to primary JSON report (typically ESRI)
         output_path: Path to save LaTeX file (and PDF if pdflatex available)
-        visualization_dir: Directory containing visualization images
+        visualization_dir: Directory containing visualization images for primary report
+        json_report_path_osm: Optional path to OSM JSON report
+        visualization_dir_osm: Optional directory containing OSM visualization images
         
     Returns:
         Path to generated LaTeX file (or PDF if compilation successful)
     """
     with open(json_report_path, 'r') as f:
-        report = json.load(f)
+        report_primary = json.load(f)
+    
+    report_osm = None
+    if json_report_path_osm:
+        with open(json_report_path_osm, 'r') as f:
+            report_osm = json.load(f)
     
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
-    # Determine visualization directory
+    # Determine visualization directories
     if visualization_dir is None:
-        visualization_dir = output_path.parent / "visualizations"
+        visualization_dir = output_path.parent / "visualizations" / "esri"
     visualization_dir = Path(visualization_dir)
+    
+    if visualization_dir_osm is None and report_osm:
+        visualization_dir_osm = output_path.parent / "visualizations" / "osm"
+    if visualization_dir_osm:
+        visualization_dir_osm = Path(visualization_dir_osm)
     
     # Generate LaTeX content
     latex_path = output_path.with_suffix('.tex')
-    latex_content = generate_latex_content(report, visualization_dir, latex_path)
+    latex_content = generate_latex_content(
+        report_primary, visualization_dir, latex_path,
+        report_osm=report_osm, visualization_dir_osm=visualization_dir_osm
+    )
     
     # Write LaTeX file
     with open(latex_path, 'w', encoding='utf-8') as f:
@@ -63,72 +81,17 @@ def generate_latex_report(
         return latex_path
 
 
-def generate_comprehensive_latex_report(
-    json_report_esri: Path,
-    json_report_osm: Path,
-    output_path: Path,
-    visualization_dir_esri: Optional[Path] = None,
+def generate_latex_content(
+    report: Dict, 
+    visualization_dir: Path, 
+    latex_path: Path,
+    report_osm: Optional[Dict] = None,
     visualization_dir_osm: Optional[Path] = None
-) -> Path:
-    """
-    Generate a comprehensive LaTeX report combining ESRI and OSM comparisons with final recommendations.
-    
-    Args:
-        json_report_esri: Path to ESRI JSON report
-        json_report_osm: Path to OSM JSON report
-        output_path: Path to save LaTeX file (and PDF if pdflatex available)
-        visualization_dir_esri: Directory containing ESRI visualization images
-        visualization_dir_osm: Directory containing OSM visualization images
-        
-    Returns:
-        Path to generated LaTeX file (or PDF if compilation successful)
-    """
-    with open(json_report_esri, 'r') as f:
-        report_esri = json.load(f)
-    
-    with open(json_report_osm, 'r') as f:
-        report_osm = json.load(f)
-    
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    
-    # Determine visualization directories
-    if visualization_dir_esri is None:
-        visualization_dir_esri = output_path.parent / "visualizations" / "esri"
-    if visualization_dir_osm is None:
-        visualization_dir_osm = output_path.parent / "visualizations" / "osm"
-    visualization_dir_esri = Path(visualization_dir_esri)
-    visualization_dir_osm = Path(visualization_dir_osm)
-    
-    # Generate LaTeX content
-    latex_path = output_path.with_suffix('.tex')
-    latex_content = generate_comprehensive_latex_content(
-        report_esri, report_osm, 
-        visualization_dir_esri, visualization_dir_osm, 
-        latex_path
-    )
-    
-    # Write LaTeX file
-    with open(latex_path, 'w', encoding='utf-8') as f:
-        f.write(latex_content)
-    
-    logger.info(f"Generated comprehensive LaTeX report: {latex_path}")
-    
-    # Try to compile to PDF
-    pdf_path = output_path.with_suffix('.pdf')
-    if compile_latex_to_pdf(latex_path, pdf_path):
-        logger.info(f"Successfully compiled PDF: {pdf_path}")
-        return pdf_path
-    else:
-        logger.info("PDF compilation not available. LaTeX file saved for manual compilation.")
-        return latex_path
-
-
-def generate_latex_content(report: Dict, visualization_dir: Path, latex_path: Path) -> str:
-    """Generate LaTeX document content."""
+) -> str:
+    """Generate comprehensive LaTeX document content with ESRI and optionally OSM comparisons."""
     
     metadata = report.get('report_metadata', {})
-    basemap_source = metadata.get('basemap_source', 'Unknown')
+    basemap_source_primary = metadata.get('basemap_source', 'ESRI World Imagery')
     generated_at = metadata.get('generated_at', datetime.now().isoformat())
     
     metrics_with = report.get('orthomosaic_with_gcps', {})
@@ -137,6 +100,22 @@ def generate_latex_content(report: Dict, visualization_dir: Path, latex_path: Pa
     
     overall_with = metrics_with.get('overall', {})
     overall_without = metrics_without.get('overall', {})
+    
+    # Process OSM report if available
+    comparison_osm = None
+    overall_with_osm = None
+    overall_without_osm = None
+    if report_osm:
+        metrics_with_osm = report_osm.get('orthomosaic_with_gcps', {})
+        metrics_without_osm = report_osm.get('orthomosaic_without_gcps', {})
+        comparison_osm = report_osm.get('comparison', {})
+        overall_with_osm = metrics_with_osm.get('overall', {})
+        overall_without_osm = metrics_without_osm.get('overall', {})
+    
+    # Build basemap sources text
+    basemap_sources_text = basemap_source_primary
+    if report_osm:
+        basemap_sources_text += " and OpenStreetMap"
     
     # LaTeX document
     latex = r"""\documentclass[11pt,a4paper]{article}
@@ -169,10 +148,12 @@ def generate_latex_content(report: Dict, visualization_dir: Path, latex_path: Pa
 \maketitle
 
 \begin{abstract}
-This report compares orthomosaics generated with and without ground control points (GCPs)
-against reference basemaps from """ + basemap_source + r""". The analysis evaluates
+This comprehensive report compares orthomosaics generated with and without ground control points (GCPs)
+against reference basemaps from """ + basemap_sources_text + r""". The analysis evaluates
 absolute accuracy (RMSE, MAE), structural similarity, seamline artifacts, and 2D spatial
-errors to assess the impact of GCPs on orthomosaic quality.
+errors to assess the impact of GCPs on orthomosaic quality. The report provides detailed comparisons
+for each basemap and concludes with recommendations on which method (with or without GCPs) provides
+better results based on comprehensive analysis across all metrics.
 \end{abstract}
 
 \section{Methodology}
@@ -199,20 +180,27 @@ The orthomosaics are compared to reference basemaps using the following methodol
       by identifying high-gradient regions that may indicate stitching errors or discontinuities.
 \end{enumerate}
 
-\subsection{Reference Basemap}
-The reference basemap used for comparison is from """ + basemap_source + r""", which provides
-a high-quality georeferenced imagery baseline for accuracy assessment.
+\subsection{Reference Basemaps}
+The orthomosaics are compared against multiple reference basemaps to ensure robust assessment:
+\begin{itemize}
+    \item \textbf{""" + basemap_source_primary + r"""}: High-resolution satellite imagery providing a detailed baseline
+"""
+    if report_osm:
+        latex += r"""    \item \textbf{OpenStreetMap}: Community-sourced mapping data providing an alternative reference
+"""
+    latex += r"""\end{itemize}
+Using multiple basemaps helps validate findings and account for potential biases in any single reference source.
 
 """
     
     # Add metrics tables
     latex += r"""\section{Quality Metrics}
 
-\subsection{Overall Metrics Comparison}
+\subsection{Overall Metrics Comparison - """ + basemap_source_primary + r"""}
 
 \begin{table}[H]
 \centering
-\caption{Overall Quality Metrics Comparison}
+\caption{Overall Quality Metrics Comparison (""" + basemap_source_primary + r""")}
 \begin{tabular}{lccc}
 \toprule
 Metric & Without GCPs & With GCPs & Improvement \\
@@ -276,6 +264,80 @@ Metric & Without GCPs & With GCPs \\
             latex += f"Feature Matches & {errors_2d_without.get('num_matches', 0)} & {errors_2d_with.get('num_matches', 0)} \\\\\n"
         
         latex += r"""\bottomrule
+\end{tabular}
+\end{table}
+
+"""
+    
+    # Add OSM metrics section if available
+    if report_osm and overall_with_osm and overall_without_osm:
+        latex += r"""\subsection{Overall Metrics Comparison - OpenStreetMap}
+
+\begin{table}[H]
+\centering
+\caption{Overall Quality Metrics Comparison (OpenStreetMap)}
+\begin{tabular}{lccc}
+\toprule
+Metric & Without GCPs & With GCPs & Improvement \\
+\midrule
+"""
+        # RMSE
+        if overall_without_osm.get('rmse') and overall_with_osm.get('rmse'):
+            rmse_imp_osm = comparison_osm.get('rmse_improvement', {})
+            pct = rmse_imp_osm.get('percentage', 0)
+            latex += f"RMSE & {overall_without_osm['rmse']:.4f} & {overall_with_osm['rmse']:.4f} & {pct:+.2f}\\% \\\\\n"
+        
+        # MAE
+        if overall_without_osm.get('mae') and overall_with_osm.get('mae'):
+            mae_imp_osm = comparison_osm.get('mae_improvement', {})
+            pct = mae_imp_osm.get('percentage', 0)
+            latex += f"MAE & {overall_without_osm['mae']:.4f} & {overall_with_osm['mae']:.4f} & {pct:+.2f}\\% \\\\\n"
+        
+        # Similarity
+        if overall_without_osm.get('similarity') and overall_with_osm.get('similarity'):
+            sim_imp_osm = comparison_osm.get('similarity_improvement', {})
+            pct = sim_imp_osm.get('percentage', 0)
+            latex += f"Similarity & {overall_without_osm['similarity']:.4f} & {overall_with_osm['similarity']:.4f} & {pct:+.2f}\\% \\\\\n"
+        
+        # Seamlines
+        if overall_without_osm.get('seamline_percentage') and overall_with_osm.get('seamline_percentage'):
+            seam_imp_osm = comparison_osm.get('seamline_reduction', {})
+            pct = seam_imp_osm.get('percentage', 0)
+            latex += f"Seamlines (\\%) & {overall_without_osm['seamline_percentage']:.2f} & {overall_with_osm['seamline_percentage']:.2f} & {pct:+.2f}\\% \\\\\n"
+        
+        latex += r"""\bottomrule
+\end{tabular}
+\end{table}
+
+"""
+        
+        # OSM 2D error metrics
+        errors_2d_with_osm = overall_with_osm.get('errors_2d', {})
+        errors_2d_without_osm = overall_without_osm.get('errors_2d', {})
+        
+        if errors_2d_with_osm.get('rmse_2d_pixels') or errors_2d_without_osm.get('rmse_2d_pixels'):
+            latex += r"""\subsection{2D Spatial Error Metrics - OpenStreetMap}
+
+Feature matching provides spatial error measurements in pixels:
+
+\begin{table}[H]
+\centering
+\caption{2D Spatial Error from Feature Matching (OpenStreetMap)}
+\begin{tabular}{lcc}
+\toprule
+Metric & Without GCPs & With GCPs \\
+\midrule
+"""
+            if errors_2d_without_osm.get('mean_offset_x_pixels') is not None:
+                latex += f"Mean X Offset (px) & {errors_2d_without_osm.get('mean_offset_x_pixels', 0):.2f} & {errors_2d_with_osm.get('mean_offset_x_pixels', 0):.2f} \\\\\n"
+            if errors_2d_without_osm.get('mean_offset_y_pixels') is not None:
+                latex += f"Mean Y Offset (px) & {errors_2d_without_osm.get('mean_offset_y_pixels', 0):.2f} & {errors_2d_with_osm.get('mean_offset_y_pixels', 0):.2f} \\\\\n"
+            if errors_2d_without_osm.get('rmse_2d_pixels') is not None:
+                latex += f"2D RMSE (px) & {errors_2d_without_osm.get('rmse_2d_pixels', 0):.2f} & {errors_2d_with_osm.get('rmse_2d_pixels', 0):.2f} \\\\\n"
+            if errors_2d_without_osm.get('num_matches', 0) > 0:
+                latex += f"Feature Matches & {errors_2d_without_osm.get('num_matches', 0)} & {errors_2d_with_osm.get('num_matches', 0)} \\\\\n"
+            
+            latex += r"""\bottomrule
 \end{tabular}
 \end{table}
 
@@ -355,7 +417,7 @@ high-gradient areas that may represent seamlines or discontinuities.}
     if vis_files['error_no_gcps'].exists() and vis_files['error_with_gcps'].exists():
         rel_path_no = vis_files['error_no_gcps'].relative_to(latex_path.parent)
         rel_path_with = vis_files['error_with_gcps'].relative_to(latex_path.parent)
-        latex += r"""\subsection{Error Maps}
+        latex += r"""\subsection{Error Maps - """ + basemap_source_primary + r"""}
 
 \begin{figure}[H]
 \centering
@@ -370,9 +432,105 @@ high-gradient areas that may represent seamlines or discontinuities.}
 \includegraphics[width=\textwidth]{""" + str(rel_path_with) + r"""}
 \caption{With GCPs}
 \end{subfigure}
-\caption{Error maps showing absolute differences between orthomosaics and reference basemap.
+\caption{Error maps showing absolute differences between orthomosaics and """ + basemap_source_primary + r""" basemap.
 Hotter colors indicate larger errors.}
 \label{fig:errors}
+\end{figure}
+
+"""
+    
+    # Add OSM visualizations if available
+    if report_osm and visualization_dir_osm:
+        vis_files_osm = {
+            'comparison': visualization_dir_osm / 'comparison_side_by_side.png',
+            'metrics': visualization_dir_osm / 'metrics_summary.png',
+            'seamlines_no_gcps': visualization_dir_osm / 'seamlines_no_gcps.png',
+            'seamlines_with_gcps': visualization_dir_osm / 'seamlines_with_gcps.png',
+            'error_no_gcps': visualization_dir_osm / 'error_no_gcps.png',
+            'error_with_gcps': visualization_dir_osm / 'error_with_gcps.png',
+        }
+        
+        latex += r"""\subsection{Visual Comparisons - OpenStreetMap}
+
+"""
+        
+        # OSM Side-by-side comparison
+        if vis_files_osm['comparison'].exists():
+            rel_path = vis_files_osm['comparison'].relative_to(latex_path.parent)
+            latex += r"""\subsubsection{Side-by-Side Comparison}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{""" + str(rel_path) + r"""}
+\caption{Comparison of orthomosaics with and without GCPs against the OpenStreetMap basemap.
+The improvement map (bottom right) shows where GCPs reduce errors (green) or increase them (red).}
+\label{fig:comparison_osm}
+\end{figure}
+
+"""
+        
+        # OSM Metrics summary
+        if vis_files_osm['metrics'].exists():
+            rel_path = vis_files_osm['metrics'].relative_to(latex_path.parent)
+            latex += r"""\subsubsection{Quality Metrics Summary}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.8\textwidth]{""" + str(rel_path) + r"""}
+\caption{Bar chart comparing quality metrics between orthomosaics with and without GCPs (OpenStreetMap).}
+\label{fig:metrics_osm}
+\end{figure}
+
+"""
+        
+        # OSM Seamline comparisons
+        if vis_files_osm['seamlines_no_gcps'].exists() and vis_files_osm['seamlines_with_gcps'].exists():
+            rel_path_no = vis_files_osm['seamlines_no_gcps'].relative_to(latex_path.parent)
+            rel_path_with = vis_files_osm['seamlines_with_gcps'].relative_to(latex_path.parent)
+            latex += r"""\subsubsection{Seamline Detection}
+
+\begin{figure}[H]
+\centering
+\begin{subfigure}{0.48\textwidth}
+\centering
+\includegraphics[width=\textwidth]{""" + str(rel_path_no) + r"""}
+\caption{Without GCPs}
+\end{subfigure}
+\hfill
+\begin{subfigure}{0.48\textwidth}
+\centering
+\includegraphics[width=\textwidth]{""" + str(rel_path_with) + r"""}
+\caption{With GCPs}
+\end{subfigure}
+\caption{Seamline detection showing potential stitching artifacts (OpenStreetMap comparison).
+Red regions indicate high-gradient areas that may represent seamlines or discontinuities.}
+\label{fig:seamlines_osm}
+\end{figure}
+
+"""
+        
+        # OSM Error visualizations
+        if vis_files_osm['error_no_gcps'].exists() and vis_files_osm['error_with_gcps'].exists():
+            rel_path_no = vis_files_osm['error_no_gcps'].relative_to(latex_path.parent)
+            rel_path_with = vis_files_osm['error_with_gcps'].relative_to(latex_path.parent)
+            latex += r"""\subsubsection{Error Maps}
+
+\begin{figure}[H]
+\centering
+\begin{subfigure}{0.48\textwidth}
+\centering
+\includegraphics[width=\textwidth]{""" + str(rel_path_no) + r"""}
+\caption{Without GCPs}
+\end{subfigure}
+\hfill
+\begin{subfigure}{0.48\textwidth}
+\centering
+\includegraphics[width=\textwidth]{""" + str(rel_path_with) + r"""}
+\caption{With GCPs}
+\end{subfigure}
+\caption{Error maps showing absolute differences between orthomosaics and OpenStreetMap basemap.
+Hotter colors indicate larger errors.}
+\label{fig:errors_osm}
 \end{figure}
 
 """
@@ -435,436 +593,146 @@ Hotter colors indicate larger errors.}
         if errors_2d_with.get('rmse_2d_pixels'):
             latex += f"With GCPs: {errors_2d_with['rmse_2d_pixels']:.2f} pixels RMSE.\n\n"
     
-    # Conclusions
-    latex += r"""\section{Conclusions}
+    # Comprehensive Recommendations
+    latex += r"""\section{Comprehensive Analysis and Recommendations}
 
 """
     
-    improvements = []
-    if comparison.get('rmse_improvement', {}).get('percentage', 0) > 0:
-        improvements.append("RMSE reduction")
-    if comparison.get('mae_improvement', {}).get('percentage', 0) > 0:
-        improvements.append("MAE reduction")
-    if comparison.get('similarity_improvement', {}).get('percentage', 0) > 0:
-        improvements.append("Improved structural similarity")
-    if comparison.get('seamline_reduction', {}).get('percentage', 0) > 0:
-        improvements.append("Reduced seamline artifacts")
-    
-    if improvements:
-        latex += "Using GCPs resulted in improvements in: " + ", ".join(improvements) + ".\n\n"
-    else:
-        latex += """Limited improvement observed with GCPs. This may indicate:
-\begin{itemize}
-    \item High-quality image alignment without GCPs
-    \item GCP accuracy or distribution issues
-    \item Reference basemap limitations
-    \item Insufficient GCP coverage for the area
-\end{itemize}
-
-"""
-    
-    latex += r"""\end{document}
-"""
-    
-    return latex
-
-
-def generate_comprehensive_latex_content(
-    report_esri: Dict, 
-    report_osm: Dict,
-    visualization_dir_esri: Path,
-    visualization_dir_osm: Path,
-    latex_path: Path
-) -> str:
-    """Generate comprehensive LaTeX document content combining ESRI and OSM reports."""
-    
-    metadata_esri = report_esri.get('report_metadata', {})
-    metadata_osm = report_osm.get('report_metadata', {})
-    generated_at = metadata_esri.get('generated_at', datetime.now().isoformat())
-    
-    # Extract metrics
-    metrics_with_esri = report_esri.get('orthomosaic_with_gcps', {})
-    metrics_without_esri = report_esri.get('orthomosaic_without_gcps', {})
-    comparison_esri = report_esri.get('comparison', {})
-    
-    metrics_with_osm = report_osm.get('orthomosaic_with_gcps', {})
-    metrics_without_osm = report_osm.get('orthomosaic_without_gcps', {})
-    comparison_osm = report_osm.get('comparison', {})
-    
-    overall_with_esri = metrics_with_esri.get('overall', {})
-    overall_without_esri = metrics_without_esri.get('overall', {})
-    overall_with_osm = metrics_with_osm.get('overall', {})
-    overall_without_osm = metrics_without_osm.get('overall', {})
-    
-    # LaTeX document
-    latex = r"""\documentclass[11pt,a4paper]{article}
-\usepackage[utf8]{inputenc}
-\usepackage[T1]{fontenc}
-\usepackage{graphicx}
-\usepackage{booktabs}
-\usepackage{geometry}
-\usepackage{hyperref}
-\usepackage{xcolor}
-\usepackage{float}
-\usepackage{caption}
-\usepackage{subcaption}
-\usepackage{longtable}
-
-\geometry{margin=2.5cm}
-\hypersetup{
-    colorlinks=true,
-    linkcolor=blue,
-    filecolor=blue,
-    urlcolor=blue,
-    citecolor=blue
-}
-
-\title{Comprehensive Orthomosaic Quality Comparison Report}
-\author{Qualicum Beach GCP Analysis}
-\date{""" + generated_at + r"""}
-
-\begin{document}
-
-\maketitle
-
-\begin{abstract}
-This comprehensive report compares orthomosaics generated with and without ground control points (GCPs)
-against reference basemaps from both ESRI World Imagery and OpenStreetMap. The analysis evaluates
-absolute accuracy (RMSE, MAE), structural similarity, seamline artifacts, and 2D spatial errors
-across both basemap sources to provide a robust assessment of the impact of GCPs on orthomosaic quality.
-Based on the comprehensive analysis, final recommendations are provided regarding which method
-(with GCPs vs. without GCPs) provides better results.
-\end{abstract}
-
-\section{Methodology}
-
-\subsection{Comparison Approach}
-The orthomosaics are compared to reference basemaps using the following methodology:
-
-\begin{enumerate}
-\item \textbf{Reprojection}: The orthomosaic is reprojected to match the reference basemap's
-      coordinate reference system (CRS) and spatial extent using bilinear resampling.
-      
-\item \textbf{Pixel-level Metrics}: 
-\begin{itemize}
-    \item \textbf{RMSE} (Root Mean Square Error): Measures overall pixel intensity differences
-    \item \textbf{MAE} (Mean Absolute Error): Measures average absolute pixel differences
-    \item \textbf{Structural Similarity}: Correlation-based measure of structural similarity
-\end{itemize}
-
-\item \textbf{Feature Matching}: Feature-based matching (SIFT, ORB, or phase correlation)
-      is used to compute 2D spatial errors, providing X and Y offset measurements in pixels.
-      This identifies systematic shifts or misalignments between the orthomosaic and reference.
-
-\item \textbf{Seamline Detection}: Gradient-based analysis detects potential seamline artifacts
-      by identifying high-gradient regions that may indicate stitching errors or discontinuities.
-\end{enumerate}
-
-\subsection{Reference Basemaps}
-Two reference basemaps are used for comparison:
-\begin{itemize}
-    \item \textbf{ESRI World Imagery}: High-resolution satellite imagery providing a commercial-grade baseline
-    \item \textbf{OpenStreetMap}: Open-source mapping data providing an alternative reference for validation
-\end{itemize}
-
-Using multiple basemap sources allows for cross-validation and more robust assessment of orthomosaic quality.
-
-"""
-    
-    # ESRI Metrics Section
-    latex += r"""\section{Quality Metrics: ESRI World Imagery}
-
-\subsection{Overall Metrics Comparison}
-
-\begin{table}[H]
-\centering
-\caption{Overall Quality Metrics Comparison (ESRI World Imagery)}
-\begin{tabular}{lccc}
-\toprule
-Metric & Without GCPs & With GCPs & Improvement \\
-\midrule
-"""
-    
-    # ESRI RMSE
-    if overall_without_esri.get('rmse') and overall_with_esri.get('rmse'):
-        rmse_imp = comparison_esri.get('rmse_improvement', {})
-        pct = rmse_imp.get('percentage', 0)
-        latex += f"RMSE & {overall_without_esri['rmse']:.4f} & {overall_with_esri['rmse']:.4f} & {pct:+.2f}\\% \\\\\n"
-    
-    # ESRI MAE
-    if overall_without_esri.get('mae') and overall_with_esri.get('mae'):
-        mae_imp = comparison_esri.get('mae_improvement', {})
-        pct = mae_imp.get('percentage', 0)
-        latex += f"MAE & {overall_without_esri['mae']:.4f} & {overall_with_esri['mae']:.4f} & {pct:+.2f}\\% \\\\\n"
-    
-    # ESRI Similarity
-    if overall_without_esri.get('similarity') and overall_with_esri.get('similarity'):
-        sim_imp = comparison_esri.get('similarity_improvement', {})
-        pct = sim_imp.get('percentage', 0)
-        latex += f"Similarity & {overall_without_esri['similarity']:.4f} & {overall_with_esri['similarity']:.4f} & {pct:+.2f}\\% \\\\\n"
-    
-    # ESRI Seamlines
-    if overall_without_esri.get('seamline_percentage') and overall_with_esri.get('seamline_percentage'):
-        seam_imp = comparison_esri.get('seamline_reduction', {})
-        pct = seam_imp.get('percentage', 0)
-        latex += f"Seamlines (\\%) & {overall_without_esri['seamline_percentage']:.2f} & {overall_with_esri['seamline_percentage']:.2f} & {pct:+.2f}\\% \\\\\n"
-    
-    latex += r"""\bottomrule
-\end{tabular}
-\end{table}
-
-"""
-    
-    # OSM Metrics Section
-    latex += r"""\section{Quality Metrics: OpenStreetMap}
-
-\subsection{Overall Metrics Comparison}
-
-\begin{table}[H]
-\centering
-\caption{Overall Quality Metrics Comparison (OpenStreetMap)}
-\begin{tabular}{lccc}
-\toprule
-Metric & Without GCPs & With GCPs & Improvement \\
-\midrule
-"""
-    
-    # OSM RMSE
-    if overall_without_osm.get('rmse') and overall_with_osm.get('rmse'):
-        rmse_imp = comparison_osm.get('rmse_improvement', {})
-        pct = rmse_imp.get('percentage', 0)
-        latex += f"RMSE & {overall_without_osm['rmse']:.4f} & {overall_with_osm['rmse']:.4f} & {pct:+.2f}\\% \\\\\n"
-    
-    # OSM MAE
-    if overall_without_osm.get('mae') and overall_with_osm.get('mae'):
-        mae_imp = comparison_osm.get('mae_improvement', {})
-        pct = mae_imp.get('percentage', 0)
-        latex += f"MAE & {overall_without_osm['mae']:.4f} & {overall_with_osm['mae']:.4f} & {pct:+.2f}\\% \\\\\n"
-    
-    # OSM Similarity
-    if overall_without_osm.get('similarity') and overall_with_osm.get('similarity'):
-        sim_imp = comparison_osm.get('similarity_improvement', {})
-        pct = sim_imp.get('percentage', 0)
-        latex += f"Similarity & {overall_without_osm['similarity']:.4f} & {overall_with_osm['similarity']:.4f} & {pct:+.2f}\\% \\\\\n"
-    
-    # OSM Seamlines
-    if overall_without_osm.get('seamline_percentage') and overall_with_osm.get('seamline_percentage'):
-        seam_imp = comparison_osm.get('seamline_reduction', {})
-        pct = seam_imp.get('percentage', 0)
-        latex += f"Seamlines (\\%) & {overall_without_osm['seamline_percentage']:.2f} & {overall_with_osm['seamline_percentage']:.2f} & {pct:+.2f}\\% \\\\\n"
-    
-    latex += r"""\bottomrule
-\end{tabular}
-\end{table}
-
-"""
-    
-    # Cross-Basemap Comparison
-    latex += r"""\section{Cross-Basemap Comparison}
-
-\subsection{Summary Table}
-
-\begin{table}[H]
-\centering
-\caption{Comparison Summary Across Both Basemaps}
-\begin{tabular}{lcc}
-\toprule
-Metric & ESRI Improvement & OSM Improvement \\
-\midrule
-"""
-    
-    # RMSE comparison
-    if comparison_esri.get('rmse_improvement') and comparison_osm.get('rmse_improvement'):
-        rmse_esri = comparison_esri['rmse_improvement'].get('percentage', 0)
-        rmse_osm = comparison_osm['rmse_improvement'].get('percentage', 0)
-        latex += f"RMSE & {rmse_esri:+.2f}\\% & {rmse_osm:+.2f}\\% \\\\\n"
-    
-    # MAE comparison
-    if comparison_esri.get('mae_improvement') and comparison_osm.get('mae_improvement'):
-        mae_esri = comparison_esri['mae_improvement'].get('percentage', 0)
-        mae_osm = comparison_osm['mae_improvement'].get('percentage', 0)
-        latex += f"MAE & {mae_esri:+.2f}\\% & {mae_osm:+.2f}\\% \\\\\n"
-    
-    # Similarity comparison
-    if comparison_esri.get('similarity_improvement') and comparison_osm.get('similarity_improvement'):
-        sim_esri = comparison_esri['similarity_improvement'].get('percentage', 0)
-        sim_osm = comparison_osm['similarity_improvement'].get('percentage', 0)
-        latex += f"Similarity & {sim_esri:+.2f}\\% & {sim_osm:+.2f}\\% \\\\\n"
-    
-    # Seamline comparison
-    if comparison_esri.get('seamline_reduction') and comparison_osm.get('seamline_reduction'):
-        seam_esri = comparison_esri['seamline_reduction'].get('percentage', 0)
-        seam_osm = comparison_osm['seamline_reduction'].get('percentage', 0)
-        latex += f"Seamline Reduction & {seam_esri:+.2f}\\% & {seam_osm:+.2f}\\% \\\\\n"
-    
-    latex += r"""\bottomrule
-\end{tabular}
-\end{table}
-
-"""
-    
-    # Visualizations - ESRI
-    latex += r"""\section{Visual Comparisons: ESRI World Imagery}
-
-"""
-    
-    vis_files_esri = {
-        'comparison': visualization_dir_esri / 'comparison_side_by_side.png',
-        'metrics': visualization_dir_esri / 'metrics_summary.png',
-        'seamlines_no_gcps': visualization_dir_esri / 'seamlines_no_gcps.png',
-        'seamlines_with_gcps': visualization_dir_esri / 'seamlines_with_gcps.png',
-        'error_no_gcps': visualization_dir_esri / 'error_no_gcps.png',
-        'error_with_gcps': visualization_dir_esri / 'error_with_gcps.png',
+    # Analyze improvements across both basemaps
+    improvements_esri = {
+        'rmse': comparison.get('rmse_improvement', {}).get('percentage', 0),
+        'mae': comparison.get('mae_improvement', {}).get('percentage', 0),
+        'similarity': comparison.get('similarity_improvement', {}).get('percentage', 0),
+        'seamline': comparison.get('seamline_reduction', {}).get('percentage', 0)
     }
     
-    if vis_files_esri['comparison'].exists():
-        rel_path = vis_files_esri['comparison'].relative_to(latex_path.parent)
-        latex += r"""\subsection{Side-by-Side Comparison (ESRI)}
-
-\begin{figure}[H]
-\centering
-\includegraphics[width=\textwidth]{""" + str(rel_path) + r"""}
-\caption{Comparison of orthomosaics with and without GCPs against ESRI World Imagery basemap.}
-\label{fig:comparison_esri}
-\end{figure}
-
-"""
+    improvements_osm = {}
+    if report_osm and comparison_osm:
+        improvements_osm = {
+            'rmse': comparison_osm.get('rmse_improvement', {}).get('percentage', 0),
+            'mae': comparison_osm.get('mae_improvement', {}).get('percentage', 0),
+            'similarity': comparison_osm.get('similarity_improvement', {}).get('percentage', 0),
+            'seamline': comparison_osm.get('seamline_reduction', {}).get('percentage', 0)
+        }
     
-    # Visualizations - OSM
-    latex += r"""\section{Visual Comparisons: OpenStreetMap}
-
-"""
-    
-    vis_files_osm = {
-        'comparison': visualization_dir_osm / 'comparison_side_by_side.png',
-        'metrics': visualization_dir_osm / 'metrics_summary.png',
-        'seamlines_no_gcps': visualization_dir_osm / 'seamlines_no_gcps.png',
-        'seamlines_with_gcps': visualization_dir_osm / 'seamlines_with_gcps.png',
-        'error_no_gcps': visualization_dir_osm / 'error_no_gcps.png',
-        'error_with_gcps': visualization_dir_osm / 'error_with_gcps.png',
-    }
-    
-    if vis_files_osm['comparison'].exists():
-        rel_path = vis_files_osm['comparison'].relative_to(latex_path.parent)
-        latex += r"""\subsection{Side-by-Side Comparison (OSM)}
-
-\begin{figure}[H]
-\centering
-\includegraphics[width=\textwidth]{""" + str(rel_path) + r"""}
-\caption{Comparison of orthomosaics with and without GCPs against OpenStreetMap basemap.}
-\label{fig:comparison_osm}
-\end{figure}
-
-"""
-    
-    # Recommendations Section
-    latex += r"""\section{Final Recommendations}
-
-Based on the comprehensive analysis across both ESRI World Imagery and OpenStreetMap basemaps,
-the following recommendations are provided:
-
-"""
-    
-    # Calculate overall scores
-    improvements_esri = []
-    improvements_osm = []
-    
-    if comparison_esri.get('rmse_improvement', {}).get('percentage', 0) > 0:
-        improvements_esri.append(('RMSE', comparison_esri['rmse_improvement']['percentage']))
-    if comparison_esri.get('mae_improvement', {}).get('percentage', 0) > 0:
-        improvements_esri.append(('MAE', comparison_esri['mae_improvement']['percentage']))
-    if comparison_esri.get('similarity_improvement', {}).get('percentage', 0) > 0:
-        improvements_esri.append(('Similarity', comparison_esri['similarity_improvement']['percentage']))
-    if comparison_esri.get('seamline_reduction', {}).get('percentage', 0) > 0:
-        improvements_esri.append(('Seamline Reduction', comparison_esri['seamline_reduction']['percentage']))
-    
-    if comparison_osm.get('rmse_improvement', {}).get('percentage', 0) > 0:
-        improvements_osm.append(('RMSE', comparison_osm['rmse_improvement']['percentage']))
-    if comparison_osm.get('mae_improvement', {}).get('percentage', 0) > 0:
-        improvements_osm.append(('MAE', comparison_osm['mae_improvement']['percentage']))
-    if comparison_osm.get('similarity_improvement', {}).get('percentage', 0) > 0:
-        improvements_osm.append(('Similarity', comparison_osm['similarity_improvement']['percentage']))
-    if comparison_osm.get('seamline_reduction', {}).get('percentage', 0) > 0:
-        improvements_osm.append(('Seamline Reduction', comparison_osm['seamline_reduction']['percentage']))
+    # Count positive improvements
+    positive_esri = sum(1 for v in improvements_esri.values() if v > 0)
+    positive_osm = sum(1 for v in improvements_osm.values() if v > 0) if improvements_osm else 0
     
     # Calculate average improvement
-    avg_improvement_esri = sum(pct for _, pct in improvements_esri) / len(improvements_esri) if improvements_esri else 0
-    avg_improvement_osm = sum(pct for _, pct in improvements_osm) / len(improvements_osm) if improvements_osm else 0
-    overall_avg_improvement = (avg_improvement_esri + avg_improvement_osm) / 2 if (improvements_esri or improvements_osm) else 0
+    avg_improvement_esri = sum(improvements_esri.values()) / len(improvements_esri) if improvements_esri else 0
+    avg_improvement_osm = sum(improvements_osm.values()) / len(improvements_osm) if improvements_osm else 0
     
-    # Generate recommendation
-    if overall_avg_improvement > 5:
-        recommendation = "with GCPs"
-        confidence = "high"
-        reason = f"GCPs provide significant improvements ({overall_avg_improvement:.2f}\\% average improvement) across multiple metrics and both basemap sources."
-    elif overall_avg_improvement > 0:
-        recommendation = "with GCPs"
-        confidence = "moderate"
-        reason = f"GCPs provide modest improvements ({overall_avg_improvement:.2f}\\% average improvement), though the benefits may be context-dependent."
+    latex += r"""\subsection{Summary of Results Across Basemaps}
+
+The analysis compared orthomosaics with and without GCPs against multiple reference basemaps to ensure robust conclusions.
+
+"""
+    
+    # ESRI summary
+    latex += r"""\subsubsection{Results Against """ + basemap_source_primary + r"""}
+
+"""
+    if positive_esri >= 2:
+        latex += f"GCPs showed improvement in {positive_esri} out of 4 key metrics, with an average improvement of {avg_improvement_esri:.2f}\\%.\n\n"
     else:
-        recommendation = "without GCPs"
-        confidence = "moderate"
-        reason = "Limited or no improvement observed with GCPs. The image-based alignment appears sufficient for this dataset, or GCP accuracy/distribution may need improvement."
+        latex += f"Limited improvement observed with GCPs against {basemap_source_primary}. Only {positive_esri} out of 4 metrics showed improvement.\n\n"
     
-    latex += r"""\subsection{Recommended Method}
+    # OSM summary if available
+    if report_osm and improvements_osm:
+        latex += r"""\subsubsection{Results Against OpenStreetMap}
 
-\textbf{Recommendation: Use orthomosaic generation """ + recommendation + r""".}
+"""
+        if positive_osm >= 2:
+            latex += f"GCPs showed improvement in {positive_osm} out of 4 key metrics, with an average improvement of {avg_improvement_osm:.2f}\\%.\n\n"
+        else:
+            latex += f"Limited improvement observed with GCPs against OpenStreetMap. Only {positive_osm} out of 4 metrics showed improvement.\n\n"
+    
+    # Cross-basemap consistency
+    if report_osm and improvements_osm:
+        consistent_improvements = []
+        consistent_degradations = []
+        
+        for metric in ['rmse', 'mae', 'similarity', 'seamline']:
+            esri_val = improvements_esri.get(metric, 0)
+            osm_val = improvements_osm.get(metric, 0)
+            if esri_val > 0 and osm_val > 0:
+                consistent_improvements.append(metric.upper())
+            elif esri_val < 0 and osm_val < 0:
+                consistent_degradations.append(metric.upper())
+        
+        latex += r"""\subsubsection{Cross-Basemap Consistency}
 
-\textbf{Confidence Level: """ + confidence + r"""}
+"""
+        if consistent_improvements:
+            latex += f"Consistent improvements across both basemaps were observed for: {', '.join(consistent_improvements)}.\n\n"
+        if consistent_degradations:
+            latex += f"Consistent degradations across both basemaps were observed for: {', '.join(consistent_degradations)}.\n\n"
+        if not consistent_improvements and not consistent_degradations:
+            latex += "Results varied between basemaps, suggesting that basemap-specific characteristics may influence the comparison.\n\n"
+    
+    # Final recommendation
+    latex += r"""\subsection{Final Recommendation}
 
-\textbf{Reasoning:} """ + reason + r"""
+Based on comprehensive analysis across all metrics and reference basemaps:
 
 """
     
-    # Detailed breakdown
-    latex += r"""\subsection{Detailed Analysis}
-
-"""
+    # Determine overall recommendation
+    total_positive = positive_esri + positive_osm
+    total_metrics = 4 + (4 if report_osm else 0)
     
-    if improvements_esri:
-        latex += r"""\subsubsection{ESRI World Imagery Results}
+    if total_positive >= total_metrics * 0.5:  # At least 50% of metrics show improvement
+        latex += r"""\textbf{Recommendation: Use GCPs for orthomosaic generation.}
 
-GCPs showed improvements in the following metrics:
+The analysis demonstrates that incorporating ground control points provides measurable improvements across multiple quality metrics. The benefits include:
 \begin{itemize}
-"""
-        for metric, pct in improvements_esri:
-            latex += f"    \\item {metric}: {pct:+.2f}\\% improvement\n"
-        latex += r"""\end{itemize}
+    \item Improved absolute accuracy (lower RMSE and MAE)
+    \item Better structural similarity to reference basemaps
+    \item Reduced seamline artifacts
+    \item More consistent georeferencing
+\end{itemize}
+
+These improvements justify the additional effort required to collect and incorporate GCPs into the processing workflow.
 
 """
-    else:
-        latex += r"""\subsubsection{ESRI World Imagery Results}
+    elif total_positive >= total_metrics * 0.25:  # At least 25% show improvement
+        latex += r"""\textbf{Recommendation: GCPs provide marginal benefits; consider based on project requirements.}
 
-Limited improvement observed with GCPs when compared to ESRI World Imagery basemap.
-
-"""
-    
-    if improvements_osm:
-        latex += r"""\subsubsection{OpenStreetMap Results}
-
-GCPs showed improvements in the following metrics:
+The analysis shows mixed results, with GCPs providing some improvements but not consistently across all metrics. Consider using GCPs if:
 \begin{itemize}
-"""
-        for metric, pct in improvements_osm:
-            latex += f"    \\item {metric}: {pct:+.2f}\\% improvement\n"
-        latex += r"""\end{itemize}
+    \item High absolute accuracy is critical for the project
+    \item GCPs are readily available and accurately surveyed
+    \item The additional processing time is acceptable
+\end{itemize}
+
+However, if processing speed is prioritized and the image alignment quality is already high, processing without GCPs may be sufficient.
 
 """
-    else:
-        latex += r"""\subsubsection{OpenStreetMap Results}
+    else:  # Less than 25% show improvement
+        latex += r"""\textbf{Recommendation: Processing without GCPs is sufficient for this dataset.}
 
-Limited improvement observed with GCPs when compared to OpenStreetMap basemap.
+The analysis indicates that the image-based alignment achieves high quality without requiring ground control points. This suggests:
+\begin{itemize}
+    \item Excellent image overlap and feature matching
+    \item High-quality camera calibration
+    \item Sufficient image coverage for robust bundle adjustment
+\end{itemize}
+
+In this case, the additional effort to collect and incorporate GCPs may not provide sufficient benefit to justify the cost and time investment.
 
 """
     
-    # Conclusion
-    latex += r"""\subsection{Conclusion}
+    # Additional considerations
+    latex += r"""\subsection{Additional Considerations}
 
-The comprehensive analysis across both ESRI World Imagery and OpenStreetMap basemaps provides
-a robust assessment of orthomosaic quality. The recommendation to use orthomosaics generated
-""" + recommendation + r""" is based on consistent patterns observed across multiple quality metrics
-and reference basemaps. This cross-validation approach ensures that the recommendation is not
-dependent on a single reference source, providing greater confidence in the final assessment.
+When making the final decision, also consider:
+\begin{itemize}
+    \item \textbf{Project Requirements}: What level of accuracy is required for the intended application?
+    \item \textbf{GCP Quality}: Are the available GCPs accurately surveyed and well-distributed?
+    \item \textbf{Processing Time}: Can the project accommodate the additional processing time for GCP incorporation?
+    \item \textbf{Cost-Benefit}: Does the improvement justify the cost of GCP collection and processing?
+\end{itemize}
 
 """
     
