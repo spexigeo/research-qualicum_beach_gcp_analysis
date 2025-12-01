@@ -640,15 +640,61 @@ def apply_2d_shift_to_orthomosaic(
         ortho_band = ortho_reproj[0] if len(ortho_reproj.shape) == 3 else ortho_reproj
         ref_band = reference_array[0] if len(reference_array.shape) == 3 else reference_array
         
-        # Compute feature matching to get offset
-        errors_2d = compute_feature_matching_2d_error(ortho_band, ref_band)
+        # Resize images if they're very large (feature matching works better on smaller images)
+        max_size = 2000  # Maximum dimension for feature matching
+        scale_factor = 1.0
+        if ortho_band.shape[0] > max_size or ortho_band.shape[1] > max_size:
+            scale_factor = min(max_size / ortho_band.shape[0], max_size / ortho_band.shape[1])
+            new_h = int(ortho_band.shape[0] * scale_factor)
+            new_w = int(ortho_band.shape[1] * scale_factor)
+            logger.info(f"Resizing images for feature matching: {ortho_band.shape} -> ({new_h}, {new_w})")
+            
+            try:
+                from scipy.ndimage import zoom
+                ortho_band = zoom(ortho_band, scale_factor, order=1)
+                ref_band = zoom(ref_band, scale_factor, order=1)
+            except ImportError:
+                # Fallback to simple downsampling
+                step = int(1 / scale_factor)
+                ortho_band = ortho_band[::step, ::step]
+                ref_band = ref_band[::step, ::step]
         
-        if errors_2d.get('mean_offset_x') is not None and errors_2d.get('mean_offset_y') is not None:
-            shift_x = errors_2d['mean_offset_x']
-            shift_y = errors_2d['mean_offset_y']
-            logger.info(f"Computed shift: X={shift_x:.2f} px, Y={shift_y:.2f} px")
+        # Try multiple feature matching methods, use the best one
+        methods_to_try = []
+        if CV2_AVAILABLE:
+            methods_to_try.extend(['sift', 'orb'])
+        if SKIMAGE_AVAILABLE:
+            methods_to_try.extend(['phase', 'template'])
+        
+        best_errors_2d = None
+        best_confidence = 0.0
+        best_method = None
+        
+        for method in methods_to_try:
+            try:
+                logger.debug(f"Trying feature matching method: {method}")
+                errors_2d = compute_feature_matching_2d_error(ortho_band, ref_band, method=method)
+                
+                if errors_2d.get('mean_offset_x') is not None and errors_2d.get('mean_offset_y') is not None:
+                    confidence = errors_2d.get('match_confidence', 0.0)
+                    if confidence > best_confidence:
+                        best_confidence = confidence
+                        best_errors_2d = errors_2d
+                        best_method = method
+                        logger.info(f"Method {method} found shift: ({errors_2d['mean_offset_x']:.2f}, {errors_2d['mean_offset_y']:.2f}) px, confidence={confidence:.3f}")
+            except Exception as e:
+                logger.debug(f"Feature matching method {method} failed: {e}")
+                continue
+        
+        if best_errors_2d and best_errors_2d.get('mean_offset_x') is not None and best_errors_2d.get('mean_offset_y') is not None:
+            # Scale shift back if we resized
+            shift_x = best_errors_2d['mean_offset_x'] / scale_factor
+            shift_y = best_errors_2d['mean_offset_y'] / scale_factor
+            logger.info(f"Computed shift using {best_method}: X={shift_x:.2f} px, Y={shift_y:.2f} px (confidence={best_confidence:.3f})")
         else:
-            logger.warning("Could not compute shift from feature matching. Using zero shift.")
+            logger.warning("Could not compute shift from any feature matching method. Using zero shift.")
+            logger.warning(f"Tried methods: {methods_to_try}")
+            logger.warning(f"Image shapes: ortho={ortho_band.shape}, ref={ref_band.shape}")
             shift_x = 0.0
             shift_y = 0.0
     else:
