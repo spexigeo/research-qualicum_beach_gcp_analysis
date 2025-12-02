@@ -686,16 +686,117 @@ def process_orthomosaic(
         # Build 3D model (if not already built)
         if not status['model_built']:
             logger.info("Building 3D model...")
-            chunk.buildModel()
+            # Verify all camera images are accessible before building model
+            logger.info("  Verifying image file accessibility...")
+            inaccessible_images = []
+            for cam in chunk.cameras:
+                try:
+                    if hasattr(cam, 'photo') and cam.photo:
+                        photo_path = cam.photo.path if hasattr(cam.photo, 'path') else str(cam.photo)
+                    elif hasattr(cam, 'label') and cam.label:
+                        photo_path = str(cam.label)
+                    elif hasattr(cam, 'path'):
+                        photo_path = str(cam.path)
+                    else:
+                        continue
+                    
+                    if photo_path and not Path(photo_path).exists():
+                        inaccessible_images.append(photo_path)
+                except (AttributeError, TypeError):
+                    continue
+            
+            if inaccessible_images:
+                logger.warning(f"  ⚠️  Found {len(inaccessible_images)} inaccessible image files:")
+                for img in inaccessible_images[:5]:  # Show first 5
+                    logger.warning(f"    - {img}")
+                if len(inaccessible_images) > 5:
+                    logger.warning(f"    ... and {len(inaccessible_images) - 5} more")
+                logger.warning("  Attempting to build model anyway (MetaShape may handle missing files)...")
+            
+            # Save project before building model (in case of failure)
             safe_save_document()
+            
+            # Build model with retry logic for file access errors
+            max_retries = 3
+            retry_count = 0
+            model_built = False
+            
+            while retry_count < max_retries and not model_built:
+                try:
+                    chunk.buildModel()
+                    model_built = True
+                    safe_save_document()
+                    logger.info("  ✓ 3D model built successfully")
+                except (OSError, IOError) as e:
+                    error_msg = str(e).lower()
+                    if "interrupted system call" in error_msg or "can't open file" in error_msg:
+                        retry_count += 1
+                        if retry_count < max_retries:
+                            logger.warning(f"  ⚠️  File access error during model building (attempt {retry_count}/{max_retries})")
+                            logger.warning(f"  Error: {e}")
+                            logger.info("  Retrying after 5 seconds...")
+                            import time
+                            time.sleep(5)
+                            # Reload project to refresh file handles
+                            try:
+                                doc.save(str(project_path))
+                                doc.open(str(project_path))
+                                chunk = doc.chunks[0]
+                            except:
+                                pass
+                        else:
+                            logger.error(f"  ✗ Failed to build model after {max_retries} attempts")
+                            logger.error(f"  Last error: {e}")
+                            logger.error("  Model building failed. You can re-run this cell to resume from this point.")
+                            raise
+                    else:
+                        # Different error, re-raise
+                        raise
         else:
             logger.info("✓ 3D model already built")
         
         # Build orthomosaic (if not already built)
         if not status['orthomosaic_built']:
             logger.info("Building orthomosaic...")
-            chunk.buildOrthomosaic()
+            # Save project before building orthomosaic (in case of failure)
             safe_save_document()
+            
+            # Build orthomosaic with retry logic for file access errors
+            max_retries = 3
+            retry_count = 0
+            ortho_built = False
+            
+            while retry_count < max_retries and not ortho_built:
+                try:
+                    chunk.buildOrthomosaic()
+                    ortho_built = True
+                    safe_save_document()
+                    logger.info("  ✓ Orthomosaic built successfully")
+                except (OSError, IOError) as e:
+                    error_msg = str(e).lower()
+                    if "interrupted system call" in error_msg or "can't open file" in error_msg:
+                        retry_count += 1
+                        if retry_count < max_retries:
+                            logger.warning(f"  ⚠️  File access error during orthomosaic building (attempt {retry_count}/{max_retries})")
+                            logger.warning(f"  Error: {e}")
+                            logger.info("  Retrying after 5 seconds...")
+                            import time
+                            time.sleep(5)
+                            # Reload project to refresh file handles
+                            try:
+                                doc.save(str(project_path))
+                                doc.open(str(project_path))
+                                chunk = doc.chunks[0]
+                            except:
+                                pass
+                        else:
+                            logger.error(f"  ✗ Failed to build orthomosaic after {max_retries} attempts")
+                            logger.error(f"  Last error: {e}")
+                            logger.error("  Orthomosaic building failed. You can re-run this cell to resume from this point.")
+                            raise
+                    else:
+                        # Different error, re-raise
+                        raise
         else:
             logger.info("✓ Orthomosaic already built")
         
