@@ -116,11 +116,10 @@ def reproject_to_match(
             
             # Use resolution-based approach - this avoids the transformation validation
             # that causes the "too many points failed to transform" error
+            # When using resolution, don't provide width/height - let rasterio calculate them
             transform, width, height = calculate_default_transform(
                 src_crs,
                 ref_crs,
-                width,
-                height,
                 output_left,
                 output_bottom,
                 output_right,
