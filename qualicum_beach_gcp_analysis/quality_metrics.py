@@ -77,10 +77,11 @@ def reproject_to_match(
                 ref_bounds.top
             )
         except Exception as e:
-            # If transformation fails with reference bounds, try using source bounds
-            # and let rasterio calculate the appropriate output dimensions
+            # If transformation fails with reference bounds, use resolution-based approach
+            # This avoids the issue where calculate_default_transform tries to transform
+            # points from source CRS when width/height are provided
             logger.warning(f"Failed to calculate transform with reference bounds: {e}")
-            logger.info("Attempting alternative approach using source bounds...")
+            logger.info("Attempting resolution-based approach...")
             
             # Transform source bounds to reference CRS first
             from rasterio.warp import transform_bounds
@@ -90,29 +91,41 @@ def reproject_to_match(
                 src_bounds.right, src_bounds.top
             )
             
-            # Now calculate transform using transformed source bounds
-            # Use the reference pixel size to determine output dimensions
+            # Get reference pixel size
             ref_pixel_size_x = abs(ref_transform[0])
             ref_pixel_size_y = abs(ref_transform[4])
             
-            # Calculate dimensions based on transformed bounds and reference pixel size
-            width = int((src_bounds_ref_crs[2] - src_bounds_ref_crs[0]) / ref_pixel_size_x)
-            height = int((src_bounds_ref_crs[3] - src_bounds_ref_crs[1]) / ref_pixel_size_y)
+            # Use the intersection of source bounds (in ref CRS) and reference bounds
+            # to determine the output extent
+            output_left = max(src_bounds_ref_crs[0], ref_bounds.left)
+            output_bottom = max(src_bounds_ref_crs[1], ref_bounds.bottom)
+            output_right = min(src_bounds_ref_crs[2], ref_bounds.right)
+            output_top = min(src_bounds_ref_crs[3], ref_bounds.top)
+            
+            # Ensure we have valid bounds
+            if output_right <= output_left or output_top <= output_bottom:
+                raise ValueError(f"Invalid output bounds after intersection: left={output_left}, bottom={output_bottom}, right={output_right}, top={output_top}")
+            
+            # Calculate dimensions based on intersection and reference pixel size
+            width = int((output_right - output_left) / ref_pixel_size_x)
+            height = int((output_top - output_bottom) / ref_pixel_size_y)
             
             # Ensure dimensions are valid
             if width <= 0 or height <= 0:
                 raise ValueError(f"Invalid dimensions after bounds transformation: width={width}, height={height}")
             
-            # Calculate transform using the transformed bounds
+            # Use resolution-based approach - this avoids the transformation validation
+            # that causes the "too many points failed to transform" error
             transform, width, height = calculate_default_transform(
                 src_crs,
                 ref_crs,
                 width,
                 height,
-                src_bounds_ref_crs[0],  # left
-                src_bounds_ref_crs[1],  # bottom
-                src_bounds_ref_crs[2],  # right
-                src_bounds_ref_crs[3]   # top
+                output_left,
+                output_bottom,
+                output_right,
+                output_top,
+                resolution=(ref_pixel_size_x, ref_pixel_size_y)
             )
         
         # Verify dimensions are valid
