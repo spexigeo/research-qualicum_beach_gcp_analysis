@@ -118,14 +118,13 @@ def reproject_to_match(
             # that causes the "too many points failed to transform" error
             # We already have the bounds in the reference CRS, so we can construct
             # the transform directly using Affine transformation
-            from affine import Affine
-            
             # Calculate dimensions from bounds and pixel size
             width = int((output_right - output_left) / ref_pixel_size_x)
             height = int((output_top - output_bottom) / ref_pixel_size_y)
             
             # Create transform: (left, pixel_width, 0, top, 0, -pixel_height)
             # Note: pixel_height is negative because Y increases downward in image coordinates
+            # Affine is already imported from rasterio at the top of the file
             transform = Affine.translation(output_left, output_top) * Affine.scale(ref_pixel_size_x, -ref_pixel_size_y)
         
         # Verify dimensions are valid
