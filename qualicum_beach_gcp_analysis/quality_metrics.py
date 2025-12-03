@@ -59,18 +59,60 @@ def reproject_to_match(
     with rasterio.open(source_path) as src:
         src_crs = src.crs
         src_count = src.count
+        src_bounds = src.bounds
         
-        # Calculate transform - unpack bounds as (left, bottom, right, top)
-        transform, width, height = calculate_default_transform(
-            src_crs,
-            ref_crs,
-            ref_width,
-            ref_height,
-            ref_bounds.left,
-            ref_bounds.bottom,
-            ref_bounds.right,
-            ref_bounds.top
-        )
+        # Calculate transform - when dst_width and dst_height are provided,
+        # the bounds should be in the destination (reference) CRS
+        # However, if transformation fails, try using source bounds instead
+        try:
+            transform, width, height = calculate_default_transform(
+                src_crs,
+                ref_crs,
+                ref_width,
+                ref_height,
+                ref_bounds.left,
+                ref_bounds.bottom,
+                ref_bounds.right,
+                ref_bounds.top
+            )
+        except Exception as e:
+            # If transformation fails with reference bounds, try using source bounds
+            # and let rasterio calculate the appropriate output dimensions
+            logger.warning(f"Failed to calculate transform with reference bounds: {e}")
+            logger.info("Attempting alternative approach using source bounds...")
+            
+            # Transform source bounds to reference CRS first
+            from rasterio.warp import transform_bounds
+            src_bounds_ref_crs = transform_bounds(
+                src_crs, ref_crs,
+                src_bounds.left, src_bounds.bottom,
+                src_bounds.right, src_bounds.top
+            )
+            
+            # Now calculate transform using transformed source bounds
+            # Use the reference pixel size to determine output dimensions
+            ref_pixel_size_x = abs(ref_transform[0])
+            ref_pixel_size_y = abs(ref_transform[4])
+            
+            # Calculate dimensions based on transformed bounds and reference pixel size
+            width = int((src_bounds_ref_crs[2] - src_bounds_ref_crs[0]) / ref_pixel_size_x)
+            height = int((src_bounds_ref_crs[3] - src_bounds_ref_crs[1]) / ref_pixel_size_y)
+            
+            # Ensure dimensions are valid
+            if width <= 0 or height <= 0:
+                raise ValueError(f"Invalid dimensions after bounds transformation: width={width}, height={height}")
+            
+            # Calculate transform using the transformed bounds
+            transform, width, height = calculate_default_transform(
+                src_crs,
+                ref_crs,
+                width,
+                height,
+                src_bounds_ref_crs[0],  # left
+                src_bounds_ref_crs[1],  # bottom
+                src_bounds_ref_crs[2],  # right
+                src_bounds_ref_crs[3]   # top
+            )
         
         # Verify dimensions are valid
         if width <= 0 or height <= 0:
