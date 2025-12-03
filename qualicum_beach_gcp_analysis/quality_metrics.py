@@ -55,6 +55,7 @@ def reproject_to_match(
         ref_width = ref.width
         ref_height = ref.height
         ref_count = ref.count
+        ref_transform = ref.transform
     
     with rasterio.open(source_path) as src:
         src_crs = src.crs
