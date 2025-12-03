@@ -265,9 +265,11 @@ def process_orthomosaic(
     
     logger.info(f"📝 MetaShape verbose output will be saved to: {log_file_path}")
     
-    # Compression settings (from main.py)
+    # Compression settings - use LZW lossless compression to reduce file size without losing visual information
     compression = Metashape.ImageCompression()
-    compression.tiff_compression = Metashape.ImageCompression.TiffCompressionNone
+    # Use LZW compression (lossless) instead of None to reduce file size
+    # LZW is lossless and typically reduces file size by 30-50% without any visual quality loss
+    compression.tiff_compression = Metashape.ImageCompression.TiffCompressionLZW
     compression.tiff_big = True
     compression.tiff_overviews = True
     compression.tiff_tiled = True
