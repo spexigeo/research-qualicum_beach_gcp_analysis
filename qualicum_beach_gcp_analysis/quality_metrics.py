@@ -160,6 +160,12 @@ def reproject_to_match(
         # Save if output path provided
         if output_path:
             output_path.parent.mkdir(parents=True, exist_ok=True)
+            # Use BIGTIFF=YES for large files (>4GB)
+            # Calculate approximate file size to decide if BIGTIFF is needed
+            bytes_per_pixel = np.dtype(reprojected.dtype).itemsize
+            estimated_size_gb = (width * height * output_count * bytes_per_pixel) / (1024 ** 3)
+            use_bigtiff = estimated_size_gb > 3.5  # Use BIGTIFF if >3.5GB to be safe
+            
             with rasterio.open(
                 output_path,
                 'w',
@@ -170,10 +176,14 @@ def reproject_to_match(
                 dtype=reprojected.dtype,
                 crs=ref_crs,
                 transform=transform,
-                compress='lzw'
+                compress='lzw',
+                BIGTIFF='YES' if use_bigtiff else 'NO',
+                tiled=True,  # Use tiled format for better performance with large files
+                blockxsize=512,
+                blockysize=512
             ) as dst:
                 dst.write(reprojected)
-            logger.info(f"Saved reprojected raster to: {output_path}")
+            logger.info(f"Saved reprojected raster to: {output_path} (BIGTIFF={'YES' if use_bigtiff else 'NO'}, estimated size: {estimated_size_gb:.2f} GB)")
     
     return reprojected, metadata
 
