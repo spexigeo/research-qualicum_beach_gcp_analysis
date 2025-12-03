@@ -114,18 +114,19 @@ def reproject_to_match(
             if width <= 0 or height <= 0:
                 raise ValueError(f"Invalid dimensions after bounds transformation: width={width}, height={height}")
             
-            # Use resolution-based approach - this avoids the transformation validation
+            # Manually construct the transform to avoid transformation validation
             # that causes the "too many points failed to transform" error
-            # When using resolution, don't provide width/height - let rasterio calculate them
-            transform, width, height = calculate_default_transform(
-                src_crs,
-                ref_crs,
-                output_left,
-                output_bottom,
-                output_right,
-                output_top,
-                resolution=(ref_pixel_size_x, ref_pixel_size_y)
-            )
+            # We already have the bounds in the reference CRS, so we can construct
+            # the transform directly using Affine transformation
+            from affine import Affine
+            
+            # Calculate dimensions from bounds and pixel size
+            width = int((output_right - output_left) / ref_pixel_size_x)
+            height = int((output_top - output_bottom) / ref_pixel_size_y)
+            
+            # Create transform: (left, pixel_width, 0, top, 0, -pixel_height)
+            # Note: pixel_height is negative because Y increases downward in image coordinates
+            transform = Affine.translation(output_left, output_top) * Affine.scale(ref_pixel_size_x, -ref_pixel_size_y)
         
         # Verify dimensions are valid
         if width <= 0 or height <= 0:
