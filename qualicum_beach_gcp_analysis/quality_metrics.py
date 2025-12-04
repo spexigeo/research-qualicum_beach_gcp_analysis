@@ -33,6 +33,167 @@ except ImportError:
     logger.warning("scikit-image not available. Some feature matching methods will be disabled. Install with: pip install scikit-image")
 
 
+def reproject_to_match_disk_only(
+    source_path: Path,
+    reference_path: Path,
+    output_path: Path,
+    tile_size: int = 2048
+) -> Dict:
+    """
+    Memory-efficient reprojection that writes directly to disk without loading into memory.
+    
+    Args:
+        source_path: Path to source GeoTIFF
+        reference_path: Path to reference GeoTIFF
+        output_path: Path to save reprojected raster (required)
+        tile_size: Size of processing tiles (default: 2048 pixels)
+        
+    Returns:
+        Dictionary with transform metadata
+    """
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    with rasterio.open(reference_path) as ref:
+        ref_crs = ref.crs
+        ref_bounds = ref.bounds
+        ref_width = ref.width
+        ref_height = ref.height
+        ref_count = ref.count
+        ref_transform = ref.transform
+        ref_dtype = ref.dtypes[0]
+    
+    with rasterio.open(source_path) as src:
+        src_crs = src.crs
+        src_count = src.count
+        src_bounds = src.bounds
+        src_dtype = src.dtypes[0]
+        
+        # Calculate transform (same logic as original function)
+        try:
+            transform, width, height = calculate_default_transform(
+                src_crs,
+                ref_crs,
+                ref_width,
+                ref_height,
+                ref_bounds.left,
+                ref_bounds.bottom,
+                ref_bounds.right,
+                ref_bounds.top
+            )
+        except Exception as e:
+            logger.warning(f"Failed to calculate transform with reference bounds: {e}")
+            logger.info("Attempting resolution-based approach...")
+            
+            from rasterio.warp import transform_bounds
+            src_bounds_ref_crs = transform_bounds(
+                src_crs, ref_crs,
+                src_bounds.left, src_bounds.bottom,
+                src_bounds.right, src_bounds.top
+            )
+            
+            ref_pixel_size_x = abs(ref_transform[0])
+            ref_pixel_size_y = abs(ref_transform[4])
+            
+            output_left = max(src_bounds_ref_crs[0], ref_bounds.left)
+            output_bottom = max(src_bounds_ref_crs[1], ref_bounds.bottom)
+            output_right = min(src_bounds_ref_crs[2], ref_bounds.right)
+            output_top = min(src_bounds_ref_crs[3], ref_bounds.top)
+            
+            if output_right <= output_left or output_top <= output_bottom:
+                raise ValueError(f"Invalid output bounds after intersection: left={output_left}, bottom={output_bottom}, right={output_right}, top={output_top}")
+            
+            width = int((output_right - output_left) / ref_pixel_size_x)
+            height = int((output_top - output_bottom) / ref_pixel_size_y)
+            
+            if width <= 0 or height <= 0:
+                raise ValueError(f"Invalid dimensions after bounds transformation: width={width}, height={height}")
+            
+            transform = Affine.translation(output_left, output_top) * Affine.scale(ref_pixel_size_x, -ref_pixel_size_y)
+        
+        if width <= 0 or height <= 0:
+            raise ValueError(f"Invalid dimensions after transform calculation: width={width}, height={height}")
+        
+        output_count = min(src_count, ref_count)
+        
+        # Calculate file size to determine if BIGTIFF is needed
+        bytes_per_pixel = np.dtype(ref_dtype).itemsize
+        estimated_size_gb = (width * height * output_count * bytes_per_pixel) / (1024 ** 3)
+        use_bigtiff = estimated_size_gb > 3.5
+        
+        # Create output file with compression
+        with rasterio.open(
+            output_path,
+            'w',
+            driver='GTiff',
+            height=height,
+            width=width,
+            count=output_count,
+            dtype=ref_dtype,
+            crs=ref_crs,
+            transform=transform,
+            compress='lzw',
+            BIGTIFF='YES' if use_bigtiff else 'NO',
+            tiled=True,
+            blockxsize=512,
+            blockysize=512
+        ) as dst:
+            # Process in tiles to avoid memory issues
+            for i in range(0, height, tile_size):
+                for j in range(0, width, tile_size):
+                    # Calculate tile window
+                    win_height = min(tile_size, height - i)
+                    win_width = min(tile_size, width - j)
+                    
+                    # Read corresponding tile from source
+                    # Calculate source window bounds in destination CRS
+                    tile_left = transform[2] + j * transform[0]
+                    tile_top = transform[5] + i * transform[4]
+                    tile_right = transform[2] + (j + win_width) * transform[0]
+                    tile_bottom = transform[5] + (i + win_height) * transform[4]
+                    
+                    # Transform back to source CRS to get source window
+                    from rasterio.warp import transform_bounds
+                    src_tile_bounds = transform_bounds(
+                        ref_crs, src_crs,
+                        tile_left, tile_bottom,
+                        tile_right, tile_top
+                    )
+                    
+                    # Read source tile
+                    src_window = src.window(*src_tile_bounds)
+                    
+                    # Reproject tile
+                    tile_data = np.zeros((output_count, win_height, win_width), dtype=ref_dtype)
+                    reproject(
+                        source=rasterio.band(src, list(range(1, output_count + 1))),
+                        destination=tile_data,
+                        src_transform=src.transform,
+                        src_crs=src_crs,
+                        dst_transform=transform,
+                        dst_crs=ref_crs,
+                        resampling=Resampling.bilinear,
+                        src_nodata=src.nodata,
+                        dst_nodata=0
+                    )
+                    
+                    # Write tile to output
+                    dst.write(tile_data, window=rasterio.windows.Window(j, i, win_width, win_height))
+        
+        logger.info(f"Saved reprojected raster to: {output_path} (BIGTIFF={'YES' if use_bigtiff else 'NO'}, estimated size: {estimated_size_gb:.2f} GB)")
+    
+    metadata = {
+        'transform': transform,
+        'crs': ref_crs,
+        'width': width,
+        'height': height,
+        'bounds': ref_bounds,
+        'count': output_count
+    }
+    
+    return metadata
+
+
 def reproject_to_match(
     source_path: Path,
     reference_path: Path,
@@ -724,6 +885,199 @@ def compare_orthomosaic_to_basemap(
         }
     
     logger.info(f"Comparison complete. Overall RMSE: {metrics.get('overall', {}).get('rmse', 'N/A')}")
+    
+    return metrics
+
+
+def compare_orthomosaic_to_basemap_memory_efficient(
+    ortho_path: Path,
+    basemap_path: Path,
+    output_dir: Optional[Path] = None,
+    tile_size: int = 2048,
+    max_downsample_for_matching: int = 2000
+) -> Dict:
+    """
+    Memory-efficient comparison that processes in tiles without loading entire arrays.
+    
+    Args:
+        ortho_path: Path to orthomosaic GeoTIFF
+        basemap_path: Path to reference basemap GeoTIFF
+        output_dir: Optional directory for intermediate outputs
+        tile_size: Size of processing tiles (default: 2048 pixels)
+        max_downsample_for_matching: Maximum dimension for feature matching (default: 2000)
+        
+    Returns:
+        Dictionary with comprehensive quality metrics
+    """
+    logger.info(f"Comparing orthomosaic {ortho_path.name} to basemap {basemap_path.name} (memory-efficient mode)")
+    
+    # Reproject orthomosaic to match basemap (disk-only, no memory load)
+    reprojected_path = None
+    if output_dir:
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        reprojected_path = output_dir / f"reprojected_{ortho_path.stem}.tif"
+    
+    if not reprojected_path:
+        raise ValueError("output_dir must be provided for memory-efficient mode")
+    
+    # Check if reprojected file already exists
+    if reprojected_path.exists():
+        logger.info(f"Using existing reprojected file: {reprojected_path}")
+    else:
+        logger.info("Reprojecting orthomosaic to match basemap (disk-only mode)...")
+        metadata = reproject_to_match_disk_only(ortho_path, basemap_path, reprojected_path, tile_size=tile_size)
+    
+    # Open both files for tile-based processing
+    with rasterio.open(reprojected_path) as ortho_src, rasterio.open(basemap_path) as ref_src:
+        # Get metadata
+        ortho_count = ortho_src.count
+        ref_count = ref_src.count
+        min_bands = min(ortho_count, ref_count)
+        width = ortho_src.width
+        height = ortho_src.height
+        
+        # Initialize accumulators for metrics
+        total_rmse_sq = 0.0
+        total_mae = 0.0
+        total_pixels = 0
+        total_seamline_pixels = 0
+        
+        # Process in tiles
+        logger.info(f"Processing comparison in tiles of {tile_size}x{tile_size} pixels...")
+        for i in range(0, height, tile_size):
+            for j in range(0, width, tile_size):
+                win_height = min(tile_size, height - i)
+                win_width = min(tile_size, width - j)
+                window = rasterio.windows.Window(j, i, win_width, win_height)
+                
+                # Read tiles
+                ortho_tile = ortho_src.read(window=window)
+                ref_tile = ref_src.read(window=window)
+                
+                # Process each band
+                for band_idx in range(min_bands):
+                    ortho_band = ortho_tile[band_idx]
+                    ref_band = ref_tile[band_idx]
+                    
+                    # Create valid mask (non-zero, non-NaN)
+                    valid = (ortho_band > 0) & (ref_band > 0) & \
+                            np.isfinite(ortho_band) & np.isfinite(ref_band)
+                    
+                    if np.any(valid):
+                        ortho_valid = ortho_band[valid]
+                        ref_valid = ref_band[valid]
+                        
+                        # Accumulate RMSE components
+                        diff = ortho_valid - ref_valid
+                        total_rmse_sq += np.sum(diff ** 2)
+                        total_mae += np.sum(np.abs(diff))
+                        total_pixels += len(ortho_valid)
+                        
+                        # Simple seamline detection (gradient-based, only for first band)
+                        if band_idx == 0:
+                            try:
+                                from scipy import ndimage
+                                # Calculate gradient magnitude
+                                grad_x = ndimage.sobel(ortho_band, axis=1)
+                                grad_y = ndimage.sobel(ortho_band, axis=0)
+                                grad_mag = np.sqrt(grad_x**2 + grad_y**2)
+                                # Threshold for seamlines (adjust based on data range)
+                                threshold = np.percentile(grad_mag[valid], 95) if np.any(valid) else 0
+                                seamline_mask = grad_mag > threshold
+                                total_seamline_pixels += np.sum(seamline_mask & valid)
+                            except ImportError:
+                                # Fallback: simple edge detection using numpy
+                                grad_x = np.diff(ortho_band, axis=1)
+                                grad_y = np.diff(ortho_band, axis=0)
+                                # Pad to match original size
+                                grad_x = np.pad(grad_x, ((0, 0), (0, 1)), mode='edge')
+                                grad_y = np.pad(grad_y, ((0, 1), (0, 0)), mode='edge')
+                                grad_mag = np.sqrt(grad_x**2 + grad_y**2)
+                                threshold = np.percentile(grad_mag[valid], 95) if np.any(valid) else 0
+                                seamline_mask = grad_mag > threshold
+                                total_seamline_pixels += np.sum(seamline_mask & valid)
+        
+        # Calculate final metrics
+        if total_pixels > 0:
+            rmse = np.sqrt(total_rmse_sq / total_pixels)
+            mae = total_mae / total_pixels
+            seamline_pct = (total_seamline_pixels / total_pixels) * 100 if total_pixels > 0 else 0.0
+        else:
+            rmse = np.nan
+            mae = np.nan
+            seamline_pct = 0.0
+        
+        # Feature matching on downsampled version (memory-efficient)
+        logger.info("Computing 2D shift using feature matching on downsampled images...")
+        errors_2d = {}
+        
+        # Downsample for feature matching
+        downsample_factor = max(1, max(width, height) // max_downsample_for_matching)
+        if downsample_factor > 1:
+            logger.info(f"Downsampling by factor {downsample_factor} for feature matching...")
+            # Read a representative tile from center
+            center_i = height // 2
+            center_j = width // 2
+            tile_size_matching = min(tile_size * 2, width, height)
+            start_i = max(0, center_i - tile_size_matching // 2)
+            start_j = max(0, center_j - tile_size_matching // 2)
+            end_i = min(height, start_i + tile_size_matching)
+            end_j = min(width, start_j + tile_size_matching)
+            
+            window = rasterio.windows.Window(start_j, start_i, end_j - start_j, end_i - start_i)
+            ortho_sample = ortho_src.read(1, window=window)
+            ref_sample = ref_src.read(1, window=window)
+            
+            # Downsample
+            ortho_sample = ortho_sample[::downsample_factor, ::downsample_factor]
+            ref_sample = ref_sample[::downsample_factor, ::downsample_factor]
+        else:
+            # Read first band only for matching
+            ortho_sample = ortho_src.read(1)
+            ref_sample = ref_src.read(1)
+        
+        # Try feature matching methods
+        methods_to_try = []
+        if CV2_AVAILABLE:
+            methods_to_try.extend(['sift', 'orb'])
+        if SKIMAGE_AVAILABLE:
+            methods_to_try.extend(['phase', 'template'])
+        
+        best_errors_2d = None
+        best_confidence = 0.0
+        
+        for method in methods_to_try:
+            try:
+                errors = compute_feature_matching_2d_error(ortho_sample, ref_sample, method=method)
+                if errors['match_confidence'] > best_confidence:
+                    best_confidence = errors['match_confidence']
+                    best_errors_2d = errors
+                    # Scale back if downsampled
+                    if downsample_factor > 1:
+                        best_errors_2d['mean_offset_x'] = best_errors_2d.get('mean_offset_x', 0) * downsample_factor
+                        best_errors_2d['mean_offset_y'] = best_errors_2d.get('mean_offset_y', 0) * downsample_factor
+            except Exception as e:
+                logger.debug(f"Feature matching method {method} failed: {e}")
+        
+        if best_errors_2d:
+            errors_2d = best_errors_2d
+    
+    # Build metrics dictionary
+    metrics = {
+        'ortho_path': str(ortho_path),
+        'basemap_path': str(basemap_path),
+        'num_bands': min_bands,
+        'reprojected_path': str(reprojected_path),
+        'overall': {
+            'rmse': float(rmse) if not np.isnan(rmse) else None,
+            'mae': float(mae) if not np.isnan(mae) else None,
+            'seamline_percentage': float(seamline_pct),
+            'errors_2d': errors_2d if errors_2d else {}
+        }
+    }
+    
+    logger.info(f"Comparison complete. Overall RMSE: {metrics['overall'].get('rmse', 'N/A')}")
     
     return metrics
 
