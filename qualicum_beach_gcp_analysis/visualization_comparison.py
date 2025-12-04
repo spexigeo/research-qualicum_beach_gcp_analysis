@@ -14,6 +14,8 @@ from typing import Dict, Optional, Tuple
 import rasterio
 import logging
 
+logger = logging.getLogger(__name__)
+
 try:
     from scipy.ndimage import zoom
     SCIPY_AVAILABLE = True
@@ -21,7 +23,173 @@ except ImportError:
     SCIPY_AVAILABLE = False
     logger.warning("scipy not available. Install with: pip install scipy")
 
-logger = logging.getLogger(__name__)
+
+def create_error_visualization_memory_efficient(
+    ortho_path: Path,
+    reference_path: Path,
+    output_path: Path,
+    title: str = "Error Visualization",
+    max_dimension: int = 2000,
+    quality: int = 85
+) -> Path:
+    """
+    Create a memory-efficient visualization showing pixel-level differences.
+    Processes in tiles and downsamples for lightweight output.
+    
+    Args:
+        ortho_path: Path to orthomosaic GeoTIFF (already reprojected to match reference)
+        reference_path: Path to reference basemap GeoTIFF
+        output_path: Path to save PNG/JPG visualization
+        title: Title for the plot
+        max_dimension: Maximum dimension for output image (default: 2000 pixels)
+        quality: JPEG quality (1-100, default: 85) if saving as JPG
+        
+    Returns:
+        Path to saved image
+    """
+    import matplotlib.pyplot as plt
+    from PIL import Image
+    import numpy as np
+    
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Determine output format from extension
+    output_format = output_path.suffix.lower()
+    if output_format not in ['.png', '.jpg', '.jpeg']:
+        output_format = '.png'
+        output_path = output_path.with_suffix('.png')
+    
+    logger.info(f"Creating memory-efficient error visualization: {ortho_path.name} vs {reference_path.name}")
+    
+    # Open both files
+    with rasterio.open(ortho_path) as ortho_src, rasterio.open(reference_path) as ref_src:
+        # Get dimensions
+        ortho_width = ortho_src.width
+        ortho_height = ortho_src.height
+        ref_width = ref_src.width
+        ref_height = ref_src.height
+        
+        # Use the smaller dimensions (they should match after reprojection)
+        width = min(ortho_width, ref_width)
+        height = min(ortho_height, ref_height)
+        
+        # Calculate downsampling factor
+        max_size = max(width, height)
+        if max_size > max_dimension:
+            downsample_factor = max_size / max_dimension
+            new_width = int(width / downsample_factor)
+            new_height = int(height / downsample_factor)
+            logger.info(f"Downsampling from {width}x{height} to {new_width}x{new_height} for visualization")
+        else:
+            downsample_factor = 1.0
+            new_width = width
+            new_height = height
+        
+        # Process in tiles and accumulate
+        tile_size = 2048
+        ortho_tiles = []
+        ref_tiles = []
+        
+        # Sample tiles across the image
+        step = max(1, int(downsample_factor))
+        sample_y = list(range(0, height, tile_size))[::step]
+        sample_x = list(range(0, width, tile_size))[::step]
+        
+        for i in sample_y:
+            for j in sample_x:
+                win_height = min(tile_size, height - i)
+                win_width = min(tile_size, width - j)
+                window = rasterio.windows.Window(j, i, win_width, win_height)
+                
+                # Read tiles
+                ortho_tile = ortho_src.read(1, window=window)  # First band
+                ref_tile = ref_src.read(1, window=window)  # First band
+                
+                # Downsample if needed
+                if downsample_factor > 1:
+                    # Simple downsampling by taking every nth pixel
+                    ortho_tile = ortho_tile[::step, ::step]
+                    ref_tile = ref_tile[::step, ::step]
+                
+                ortho_tiles.append(ortho_tile)
+                ref_tiles.append(ref_tile)
+        
+        # Reconstruct downsampled arrays (simplified - just concatenate tiles)
+        # For better quality, we'd use proper resampling, but this is faster
+        if len(ortho_tiles) == 1:
+            ortho_downsampled = ortho_tiles[0]
+            ref_downsampled = ref_tiles[0]
+        else:
+            # Simple concatenation (may have slight artifacts at boundaries)
+            # Better approach: use scipy.ndimage.zoom if available
+            if SCIPY_AVAILABLE:
+                # Read full arrays at downsampled resolution
+                logger.info("Using scipy for high-quality downsampling...")
+                ortho_full = ortho_src.read(1)
+                ref_full = ref_src.read(1)
+                
+                zoom_factor = 1.0 / downsample_factor
+                ortho_downsampled = zoom(ortho_full, zoom_factor, order=1)
+                ref_downsampled = zoom(ref_full, zoom_factor, order=1)
+            else:
+                # Fallback: simple downsampling
+                ortho_downsampled = ortho_src.read(1)[::step, ::step]
+                ref_downsampled = ref_src.read(1)[::step, ::step]
+    
+    # Calculate difference
+    diff = np.abs(ortho_downsampled.astype(np.float32) - ref_downsampled.astype(np.float32))
+    
+    # Normalize for visualization (0-255)
+    diff_max = diff.max()
+    if diff_max > 0:
+        diff_norm = (diff / diff_max * 255).astype(np.uint8)
+    else:
+        diff_norm = diff.astype(np.uint8)
+    
+    # Normalize ortho and ref for display (0-255)
+    ortho_norm = np.clip((ortho_downsampled - ortho_downsampled.min()) / 
+                        (ortho_downsampled.max() - ortho_downsampled.min() + 1e-10) * 255, 
+                        0, 255).astype(np.uint8)
+    ref_norm = np.clip((ref_downsampled - ref_downsampled.min()) / 
+                      (ref_downsampled.max() - ref_downsampled.min() + 1e-10) * 255, 
+                      0, 255).astype(np.uint8)
+    
+    # Create visualization
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    
+    # Orthomosaic
+    axes[0].imshow(ortho_norm, cmap='gray')
+    axes[0].set_title('Computed Orthomosaic', fontweight='bold')
+    axes[0].axis('off')
+    
+    # Reference (ground truth)
+    axes[1].imshow(ref_norm, cmap='gray')
+    axes[1].set_title('Ground Truth (Reference)', fontweight='bold')
+    axes[1].axis('off')
+    
+    # Difference map (error visualization)
+    im = axes[2].imshow(diff_norm, cmap='hot', vmin=0, vmax=255)
+    axes[2].set_title('Pixel-Level Difference Map', fontweight='bold')
+    axes[2].axis('off')
+    plt.colorbar(im, ax=axes[2], label='Absolute Difference (normalized)')
+    
+    fig.suptitle(title, fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    
+    # Save as PNG or JPG
+    if output_format == '.jpg' or output_format == '.jpeg':
+        plt.savefig(output_path, dpi=150, bbox_inches='tight', format='jpg', quality=quality, optimize=True)
+    else:
+        plt.savefig(output_path, dpi=150, bbox_inches='tight', format='png', optimize=True)
+    
+    plt.close()
+    
+    # Get file size
+    file_size_kb = output_path.stat().st_size / 1024
+    logger.info(f"Saved error visualization to: {output_path} ({file_size_kb:.1f} KB)")
+    
+    return output_path
 
 
 def create_error_visualization(

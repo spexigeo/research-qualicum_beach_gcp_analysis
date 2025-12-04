@@ -9,7 +9,7 @@ from .metashape_processor import process_orthomosaic, PhotoMatchQuality, DepthMa
 from .quality_metrics import compare_orthomosaic_to_basemap, calculate_rmse, calculate_mae, detect_seamlines, compute_feature_matching_2d_error, apply_2d_shift_to_orthomosaic, align_orthomosaic_to_gcps
 from .report_generator import generate_comparison_report, generate_markdown_report, convert_to_json_serializable
 from .latex_report_generator import generate_latex_report
-from .visualization_comparison import create_error_visualization, create_seamline_visualization, create_comparison_side_by_side, create_metrics_summary_plot
+from .visualization_comparison import create_error_visualization, create_error_visualization_memory_efficient, create_seamline_visualization, create_comparison_side_by_side, create_metrics_summary_plot
 
 __all__ = [
     'parse_kmz_file',
@@ -41,6 +41,7 @@ __all__ = [
     'convert_to_json_serializable',
     'generate_latex_report',
     'create_error_visualization',
+    'create_error_visualization_memory_efficient',
     'create_seamline_visualization',
     'create_comparison_side_by_side',
     'create_metrics_summary_plot',
