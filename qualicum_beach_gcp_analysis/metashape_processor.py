@@ -70,9 +70,14 @@ class TeeOutput:
     
     def write(self, text):
         """Write to both log file and optionally show progress in notebook."""
-        # Always write to log file
-        self.log_file.write(text)
-        self.log_file.flush()  # Ensure it's written immediately
+        # Always write to log file FIRST (before any filtering)
+        try:
+            self.log_file.write(text)
+            self.log_file.flush()  # Ensure it's written immediately
+        except Exception as e:
+            # If log file write fails, try to write to original stdout as fallback
+            if self.original_stdout:
+                print(f"[LOG ERROR: {e}]", file=self.original_stdout, flush=True)
         
         # Buffer text to check for complete lines
         self.buffer += text
@@ -685,18 +690,23 @@ def process_orthomosaic(
                                 except (ValueError, KeyError) as e:
                                     logger.warning(f"  Skipping invalid marker row: {e}")
                         
-                        logger.info(f"  Added {markers_added} markers from CSV file")
+                        logger.info(f"  ✓ Added {markers_added} markers from CSV file")
                         safe_save_document()
                     else:
                         # Try to use importMarkers (might work for other formats)
                         logger.info(f"  Unknown format ({file_ext}), attempting importMarkers")
                         try:
                             chunk.importMarkers(str(gcp_file))
+                            markers_added = len(chunk.markers) - existing_markers
+                            logger.info(f"  ✓ Added {markers_added} markers via importMarkers")
                             safe_save_document()
                         except Exception as e:
-                            logger.error(f"  Failed to import markers: {e}")
+                            logger.error(f"  ✗ Failed to import markers: {e}")
                             logger.error("  Please use XML or CSV format, or provide GCPs as a list")
                             raise
+                else:
+                    logger.error("  ✗ use_gcps=True but no gcp_file provided!")
+                    raise ValueError("use_gcps=True requires gcp_file parameter")
                 elif gcps:
                     logger.info(f"Using {len(gcps)} GCPs from provided list")
                     logger.info(f"  Setting GCP accuracy to {gcp_accuracy}m for high weight in bundle adjustment")
@@ -720,11 +730,21 @@ def process_orthomosaic(
                             final_accuracy
                         ))
                         logger.debug(f"  Marker {marker.label}: accuracy = {final_accuracy}m")
+                    logger.info(f"  ✓ Added {len(gcps)} markers from provided list")
                     safe_save_document()
                 else:
-                    logger.warning("use_gcps=True but no GCPs provided. Processing without GCPs.")
+                    logger.error("  ✗ use_gcps=True but no GCPs provided (neither gcp_file nor gcps list)!")
+                    raise ValueError("use_gcps=True requires either gcp_file or gcps parameter")
             else:
                 logger.info(f"✓ GCPs already loaded ({existing_markers} markers)")
+            
+            # Final GCP summary
+            final_marker_count = len(chunk.markers)
+            enabled_markers = sum(1 for m in chunk.markers if m.reference.enabled)
+            logger.info(f"✓ Total markers in project: {final_marker_count}")
+            logger.info(f"✓ Enabled markers (will be used): {enabled_markers}")
+            logger.info(f"✓ GCP accuracy setting: {gcp_accuracy}m ({gcp_accuracy*1000:.1f}mm)")
+            logger.info("=" * 60)
         elif len(chunk.markers) > 0:
             logger.info(f"Note: {len(chunk.markers)} markers found in project but use_gcps=False")
         
@@ -748,36 +768,72 @@ def process_orthomosaic(
                     tie_points_count = 0
             logger.info(f"✓ Photos already matched ({tie_points_count} tie points) - REUSING existing results")
         
-        # Align cameras (if not already aligned)
-        if not status['cameras_aligned']:
-            logger.info("📐 Aligning cameras...")
-            if use_gcps and len(chunk.markers) > 0:
-                enabled_markers = sum(1 for m in chunk.markers if m.reference.enabled)
-                logger.info(f"  Using {enabled_markers} GCPs with high weight (accuracy={gcp_accuracy}m) in bundle adjustment")
-                logger.info(f"  GCPs will have much higher weight than camera pose metadata")
-            chunk.alignCameras()
-            safe_save_document()
-            logger.info("  ✓ Camera alignment complete")
-        else:
-            aligned_count = sum(1 for cam in chunk.cameras if cam.transform)
-            logger.info(f"✓ Cameras already aligned ({aligned_count}/{len(chunk.cameras)} cameras)")
-        
         # Set coordinate accuracy bounds on photos and markers
-        # This should be done after alignment but before optimization
+        # CRITICAL: This MUST be done BEFORE alignCameras() so GCPs have proper weight
         logger.info("Setting coordinate accuracy bounds on photos and markers")
         
         # Set Camera Reference Accuracy to 10m (assumes photos have initial coordinate data from drone GPS)
         chunk.camera_location_accuracy = (10, 10, 10)  # (x, y, z) in meters
         logger.info("  Camera location accuracy set to 10m (x, y, z)")
         
-        # Set Marker (GCP) Accuracy to 0.005m (5mm)
-        chunk.marker_location_accuracy = (0.005, 0.005, 0.005)  # (x, y, z) in meters
-        logger.info("  Marker (GCP) location accuracy set to 0.005m (5mm)")
+        # Set Marker (GCP) Accuracy - use gcp_accuracy parameter (default 0.05m = 5cm)
+        # Lower values = higher weight in bundle adjustment
+        # 0.05m (5cm) gives very high weight compared to 10m camera accuracy
+        marker_accuracy = gcp_accuracy if use_gcps else (0.005, 0.005, 0.005)  # Default 5mm if not using GCPs
+        chunk.marker_location_accuracy = (marker_accuracy, marker_accuracy, marker_accuracy)  # (x, y, z) in meters
+        if use_gcps:
+            logger.info(f"  ✓ Marker (GCP) location accuracy set to {marker_accuracy}m ({marker_accuracy*1000:.1f}mm)")
+            logger.info(f"  ✓ GCP weight in bundle adjustment: 1/{marker_accuracy:.3f} (vs camera weight: 1/10.000)")
+            logger.info(f"  ✓ GCPs will have {10.0/marker_accuracy:.0f}x higher weight than camera poses")
+        else:
+            logger.info(f"  Marker location accuracy set to 0.005m (5mm) - not using GCPs")
+        
+        # Align cameras (if not already aligned)
+        if not status['cameras_aligned']:
+            logger.info("📐 Aligning cameras...")
+            if use_gcps and len(chunk.markers) > 0:
+                enabled_markers = sum(1 for m in chunk.markers if m.reference.enabled)
+                logger.info(f"  ✓ CONFIRMED: Using {enabled_markers} GCPs in bundle adjustment")
+                logger.info(f"  ✓ GCP accuracy: {marker_accuracy}m (weight = 1/{marker_accuracy:.3f})")
+                logger.info(f"  ✓ Camera accuracy: 10m (weight = 1/10.000)")
+                logger.info(f"  ✓ GCPs have {10.0/marker_accuracy:.0f}x higher weight than camera metadata")
+                
+                # Verify markers are enabled and have correct accuracy
+                for i, marker in enumerate(chunk.markers):
+                    if marker.reference.enabled:
+                        acc = marker.reference.accuracy
+                        logger.info(f"    GCP {i+1} ({marker.label}): enabled=True, accuracy=({acc.x:.4f}, {acc.y:.4f}, {acc.z:.4f})m")
+            else:
+                if use_gcps:
+                    logger.warning("  ⚠️  WARNING: use_gcps=True but no markers found! Processing without GCPs.")
+                else:
+                    logger.info("  Processing without GCPs (use_gcps=False)")
+            chunk.alignCameras()
+            safe_save_document()
+            logger.info("  ✓ Camera alignment complete")
+            
+            # After alignment, verify GCP usage
+            if use_gcps and len(chunk.markers) > 0:
+                enabled_markers = [m for m in chunk.markers if m.reference.enabled]
+                logger.info(f"  ✓ Post-alignment: {len(enabled_markers)} GCPs remain enabled")
+                # Check if markers have projections (indicating they were used)
+                markers_with_projections = sum(1 for m in enabled_markers if len(m.projections) > 0)
+                logger.info(f"  ✓ {markers_with_projections}/{len(enabled_markers)} GCPs have projections (used in alignment)")
+        else:
+            aligned_count = sum(1 for cam in chunk.cameras if cam.transform)
+            logger.info(f"✓ Cameras already aligned ({aligned_count}/{len(chunk.cameras)} cameras)")
+            if use_gcps and len(chunk.markers) > 0:
+                enabled_markers = sum(1 for m in chunk.markers if m.reference.enabled)
+                markers_with_projections = sum(1 for m in chunk.markers if m.reference.enabled and len(m.projections) > 0)
+                logger.info(f"  ✓ {enabled_markers} GCPs enabled, {markers_with_projections} have projections")
         
         # Optimize Cameras to refine the initial alignment using the set reference accuracies
         # This should be done after alignment and accuracy settings, but before building depth maps
         logger.info("Optimizing cameras for improved accuracy")
         logger.info("  Optimizing: f, cx, cy, k1, k2, k3, p1, p2, and coordinates")
+        if use_gcps and len(chunk.markers) > 0:
+            enabled_markers = sum(1 for m in chunk.markers if m.reference.enabled)
+            logger.info(f"  ✓ Using {enabled_markers} GCPs with accuracy {marker_accuracy}m in optimization")
         chunk.optimizeCameras()
         safe_save_document()
         logger.info("  ✓ Camera optimization complete")
