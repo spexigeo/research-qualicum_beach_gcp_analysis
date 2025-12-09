@@ -798,36 +798,39 @@ def downsample_ortho_to_basemap_resolution(
         logger.info(f"Basemap resolution: {target_resolution:.4f}m/pixel")
         logger.info(f"Downsampling factor: {downsample_factor:.2f}x")
         
+        # Calculate transform and dimensions for downsampled/reprojected image
+        from rasterio.warp import calculate_default_transform, reproject, Resampling
+        
         if downsample_factor < 1.0:
-            logger.warning(f"Ortho resolution ({ortho_resolution:.4f}m) is lower than basemap ({target_resolution:.4f}m). No downsampling needed.")
-            # Just reproject to match CRS and bounds
-            from rasterio.warp import calculate_default_transform, reproject, Resampling
-            
+            logger.warning(f"Ortho resolution ({ortho_resolution:.4f}m) is lower than basemap ({target_resolution:.4f}m). Reprojecting to match CRS and bounds.")
+            # Just reproject to match CRS and bounds (no downsampling)
             transform, width, height = calculate_default_transform(
                 ortho_crs, target_crs,
                 ortho.width, ortho.height,
-                *ortho.bounds
-            )
-            
-            # Adjust to match basemap bounds
-            transform, width, height = calculate_default_transform(
-                ortho_crs, target_crs,
-                width, height,
                 target_bounds.left, target_bounds.bottom,
                 target_bounds.right, target_bounds.top
             )
         else:
-            # Calculate new dimensions
+            # Calculate new dimensions for downsampling
             new_width = int(ortho.width / downsample_factor)
             new_height = int(ortho.height / downsample_factor)
             
-            # Calculate transform for downsampled image
-            transform = rasterio.Affine(
-                target_resolution, 0, ortho.bounds.left,
-                0, -target_resolution, ortho.bounds.top
+            # Calculate transform for downsampled image matching basemap resolution
+            # First transform bounds to target CRS
+            from rasterio.warp import transform_bounds
+            ortho_bounds_target_crs = transform_bounds(
+                ortho_crs, target_crs,
+                ortho.bounds.left, ortho.bounds.bottom,
+                ortho.bounds.right, ortho.bounds.top
             )
-            width = new_width
-            height = new_height
+            
+            # Calculate transform with target resolution
+            transform, width, height = calculate_default_transform(
+                ortho_crs, target_crs,
+                new_width, new_height,
+                ortho_bounds_target_crs[0], ortho_bounds_target_crs[1],
+                ortho_bounds_target_crs[2], ortho_bounds_target_crs[3]
+            )
         
         # Create output file
         profile = ortho.profile.copy()
