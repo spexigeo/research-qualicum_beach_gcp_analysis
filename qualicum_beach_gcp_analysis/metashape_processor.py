@@ -587,6 +587,9 @@ def process_orthomosaic(
         # Add GCPs if requested (only if not already added)
         if use_gcps:
             existing_markers = len(chunk.markers)
+            logger.info("=" * 60)
+            logger.info("GROUND CONTROL POINTS (GCPs) CONFIGURATION")
+            logger.info("=" * 60)
             if existing_markers == 0:
                 if gcp_file and gcp_file.exists():
                     logger.info(f"Loading GCPs from file: {gcp_file}")
