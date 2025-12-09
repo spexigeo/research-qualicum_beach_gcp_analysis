@@ -30,19 +30,102 @@ logger = logging.getLogger(__name__)
 Image.MAX_IMAGE_PIXELS = None
 
 
+class TeeOutput:
+    """
+    A file-like object that writes to both a file and optionally shows progress messages.
+    Filters MetaShape verbose output and only shows key progress messages.
+    """
+    def __init__(self, log_file, original_stdout=None, show_progress=True):
+        self.log_file = log_file
+        self.original_stdout = original_stdout
+        self.show_progress = show_progress
+        self.buffer = ""
+        
+        # Keywords that indicate important progress messages
+        self.progress_keywords = [
+            "AddPhotos",
+            "MatchPhotos",
+            "AlignCameras",
+            "BuildDepthMaps",
+            "BuildModel",
+            "BuildOrthomosaic",
+            "ExportRaster",
+            "LoadProject",
+            "SaveProject",
+            "ImportMarkers",
+            "OptimizeCameras",
+            "Filtering done",
+            "depth maps filtered",
+            "saved depth maps",
+            "loaded depth map",
+            "Processing",
+            "Progress:",
+            "completed",
+            "finished",
+            "error",
+            "Error",
+            "warning",
+            "Warning"
+        ]
+    
+    def write(self, text):
+        """Write to both log file and optionally show progress in notebook."""
+        # Always write to log file
+        self.log_file.write(text)
+        self.log_file.flush()  # Ensure it's written immediately
+        
+        # Buffer text to check for complete lines
+        self.buffer += text
+        
+        # Process complete lines
+        while '\n' in self.buffer:
+            line, self.buffer = self.buffer.split('\n', 1)
+            line = line.strip()
+            
+            if not line:
+                continue
+            
+            # Check if this line contains progress information
+            if self.show_progress and self.original_stdout:
+                # Show only lines with progress keywords or important status
+                if any(keyword.lower() in line.lower() for keyword in self.progress_keywords):
+                    # Clean up the line for display
+                    display_line = line
+                    # Remove timestamps if present
+                    if ':' in display_line and len(display_line) > 20:
+                        parts = display_line.split(':', 2)
+                        if len(parts) >= 3 and parts[0].replace(' ', '').replace('-', '').isdigit():
+                            display_line = ':'.join(parts[2:]).strip()
+                    
+                    # Show progress message
+                    print(display_line, file=self.original_stdout, flush=True)
+    
+    def flush(self):
+        """Flush both outputs."""
+        self.log_file.flush()
+        if self.original_stdout:
+            self.original_stdout.flush()
+    
+    def close(self):
+        """Close the log file (but not original stdout)."""
+        if self.log_file:
+            self.log_file.close()
+
+
 @contextmanager
-def redirect_metashape_output(log_file_path: Path):
+def redirect_metashape_output(log_file_path: Path, show_progress: bool = True):
     """
     Context manager to redirect MetaShape's stdout/stderr to a log file
-    while keeping logger output visible in the notebook.
+    while keeping logger output and key progress messages visible in the notebook.
     
     Args:
         log_file_path: Path to the log file
+        show_progress: Whether to show progress messages in notebook (default: True)
     """
     log_file_path.parent.mkdir(parents=True, exist_ok=True)
     
-    # Open log file in append mode
-    log_file = open(log_file_path, 'a', encoding='utf-8')
+    # Open log file in write mode (not append) to start fresh each time
+    log_file = open(log_file_path, 'w', encoding='utf-8')
     
     # Save original stdout and stderr
     original_stdout = sys.stdout
@@ -69,16 +152,32 @@ def redirect_metashape_output(log_file_path: Path):
     root_logger.addHandler(console_handler)
     
     try:
-        # Redirect stdout and stderr to log file (MetaShape output goes here)
-        sys.stdout = log_file
-        sys.stderr = log_file
+        # Create TeeOutput that writes to file and shows progress
+        tee_stdout = TeeOutput(log_file, original_stdout, show_progress=show_progress)
+        tee_stderr = TeeOutput(log_file, original_stdout, show_progress=show_progress)
+        
+        # Redirect stdout and stderr to TeeOutput (MetaShape output goes here)
+        sys.stdout = tee_stdout
+        sys.stderr = tee_stderr
         
         yield log_file
         
     finally:
+        # Flush before restoring
+        if hasattr(sys.stdout, 'flush'):
+            sys.stdout.flush()
+        if hasattr(sys.stderr, 'flush'):
+            sys.stderr.flush()
+        
         # Restore original stdout and stderr
         sys.stdout = original_stdout
         sys.stderr = original_stderr
+        
+        # Close TeeOutput (which closes log file)
+        if hasattr(tee_stdout, 'close'):
+            tee_stdout.close()
+        if hasattr(tee_stderr, 'close'):
+            tee_stderr.close()
         
         # Remove the console handler we added
         root_logger.removeHandler(console_handler)
@@ -86,9 +185,6 @@ def redirect_metashape_output(log_file_path: Path):
         # Restore removed handlers if any
         for handler in handlers_to_remove:
             root_logger.addHandler(handler)
-        
-        # Close log file
-        log_file.close()
 
 
 class PhotoMatchQuality(IntEnum):
@@ -634,7 +730,7 @@ def process_orthomosaic(
         
         # Match photos (if not already matched)
         if not status['photos_matched']:
-            logger.info("Matching photos...")
+            logger.info("🔍 Matching photos (this may take a while)...")
             chunk.matchPhotos(
                 downscale=photo_match_quality,
                 tiepoint_limit=tiepoint_limit,
@@ -654,13 +750,14 @@ def process_orthomosaic(
         
         # Align cameras (if not already aligned)
         if not status['cameras_aligned']:
-            logger.info("Aligning cameras...")
+            logger.info("📐 Aligning cameras...")
             if use_gcps and len(chunk.markers) > 0:
                 enabled_markers = sum(1 for m in chunk.markers if m.reference.enabled)
                 logger.info(f"  Using {enabled_markers} GCPs with high weight (accuracy={gcp_accuracy}m) in bundle adjustment")
                 logger.info(f"  GCPs will have much higher weight than camera pose metadata")
             chunk.alignCameras()
             safe_save_document()
+            logger.info("  ✓ Camera alignment complete")
         else:
             aligned_count = sum(1 for cam in chunk.cameras if cam.transform)
             logger.info(f"✓ Cameras already aligned ({aligned_count}/{len(chunk.cameras)} cameras)")
@@ -687,7 +784,7 @@ def process_orthomosaic(
         
         # Build depth maps (if not already built)
         if not status['depth_maps_built']:
-            logger.info("Building depth maps...")
+            logger.info("🗺️  Building depth maps (this may take a while)...")
             chunk.buildDepthMaps(
                 downscale=depth_map_quality,
                 filter_mode=Metashape.MildFiltering
@@ -709,7 +806,7 @@ def process_orthomosaic(
         
         # Build 3D model (if not already built)
         if not status['model_built']:
-            logger.info("Building 3D model...")
+            logger.info("🏗️  Building 3D model (this may take a while)...")
             # Verify all camera images are accessible before building model
             logger.info("  Verifying image file accessibility...")
             inaccessible_images = []
@@ -825,7 +922,7 @@ def process_orthomosaic(
         
         # Build orthomosaic (if not already built)
         if not status['orthomosaic_built']:
-            logger.info("Building orthomosaic...")
+            logger.info("🖼️  Building orthomosaic (this may take a while)...")
             # Save project before building orthomosaic (in case of failure)
             safe_save_document()
             
