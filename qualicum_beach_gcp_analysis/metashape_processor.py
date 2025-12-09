@@ -550,6 +550,18 @@ def process_orthomosaic(
                             chunk.importMarkers(str(gcp_file))
                             markers_added = len(chunk.markers) - existing_markers
                             logger.info(f"  ✓ Added {markers_added} markers from XML via importMarkers")
+                            
+                            # Override accuracy for all markers to ensure correct weight
+                            # Even if file has different accuracy, use gcp_accuracy parameter
+                            for marker in chunk.markers:
+                                if marker.reference.enabled:
+                                    marker.reference.accuracy = Metashape.Vector([gcp_accuracy, gcp_accuracy, gcp_accuracy])
+                                    try:
+                                        marker.reference.scalebar_accuracy = 0.001  # 1mm for very high weight
+                                    except AttributeError:
+                                        pass
+                                    logger.debug(f"  Overrode marker {marker.label} accuracy to {gcp_accuracy}m")
+                            
                             safe_save_document()
                         except (RuntimeError, Exception) as e:
                             # XML import failed, fall back to CSV parsing (which works more reliably)
@@ -659,6 +671,18 @@ def process_orthomosaic(
                             chunk.importMarkers(str(gcp_file))
                             markers_added = len(chunk.markers) - existing_markers
                             logger.info(f"  ✓ Added {markers_added} markers via importMarkers")
+                            
+                            # Override accuracy for all markers to ensure correct weight
+                            # Even if file has different accuracy, use gcp_accuracy parameter
+                            for marker in chunk.markers:
+                                if marker.reference.enabled:
+                                    marker.reference.accuracy = Metashape.Vector([gcp_accuracy, gcp_accuracy, gcp_accuracy])
+                                    try:
+                                        marker.reference.scalebar_accuracy = 0.001  # 1mm for very high weight
+                                    except AttributeError:
+                                        pass
+                                    logger.debug(f"  Overrode marker {marker.label} accuracy to {gcp_accuracy}m")
+                            
                             safe_save_document()
                         except Exception as e:
                             logger.error(f"  ✗ Failed to import markers: {e}")
