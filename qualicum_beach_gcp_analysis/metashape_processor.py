@@ -551,15 +551,14 @@ def process_orthomosaic(
         # Add photos (if not already added)
         photos = []
         if not status['photos_added']:
-            logger.info(f"📸 Adding photos from: {photos_dir}")
+            logger.info(f"Adding photos from: {photos_dir}")
             photos = find_image_files(photos_dir)
             if not photos:
                 raise ValueError(f"No images found in {photos_dir}")
             
-            logger.info(f"  Found {len(photos)} images")
+            logger.info(f"Found {len(photos)} images")
             chunk.addPhotos(photos)
             safe_save_document()
-            logger.info("  ✓ Photos added successfully")
         else:
             logger.info(f"✓ Photos already added ({len(chunk.cameras)} cameras)")
             # Get camera paths - MetaShape Camera objects use 'label' or 'photo' property
@@ -785,7 +784,7 @@ def process_orthomosaic(
         
         # Build depth maps (if not already built)
         if not status['depth_maps_built']:
-            logger.info("🗺️  Building depth maps (this may take a while)...")
+            logger.info("Building depth maps...")
             chunk.buildDepthMaps(
                 downscale=depth_map_quality,
                 filter_mode=Metashape.MildFiltering
@@ -807,7 +806,7 @@ def process_orthomosaic(
         
         # Build 3D model (if not already built)
         if not status['model_built']:
-            logger.info("🏗️  Building 3D model (this may take a while)...")
+            logger.info("Building 3D model...")
             # Verify all camera images are accessible before building model
             logger.info("  Verifying image file accessibility...")
             inaccessible_images = []
@@ -921,9 +920,13 @@ def process_orthomosaic(
         else:
             logger.info("✓ 3D model already built - REUSING existing results")
         
-        # Build orthomosaic (if not already built)
-        if not status['orthomosaic_built']:
-            logger.info("🖼️  Building orthomosaic (this may take a while)...")
+        # Check if exported GeoTIFF already exists (before building orthomosaic)
+        ortho_path = output_path / f"{product_id}.tif"
+        ortho_file_exists = ortho_path.exists() and not clean_intermediate_files
+        
+        # Build orthomosaic (if not already built AND exported file doesn't exist)
+        if not status['orthomosaic_built'] and not ortho_file_exists:
+            logger.info("Building orthomosaic...")
             # Save project before building orthomosaic (in case of failure)
             safe_save_document()
             
@@ -963,20 +966,25 @@ def process_orthomosaic(
                     else:
                         # Different error, re-raise
                         raise
-        else:
-            logger.info("✓ Orthomosaic already built - REUSING existing results")
+        elif status['orthomosaic_built']:
+            logger.info("✓ Orthomosaic already built in project - REUSING existing results")
+        elif ortho_file_exists:
+            logger.info(f"✓ Orthomosaic GeoTIFF already exists - REUSING existing file")
+            logger.info(f"  File: {ortho_path}")
+            existing_size_mb = ortho_path.stat().st_size / (1024 * 1024)
+            logger.info(f"  Size: {existing_size_mb:.2f} MB")
         
         # Export GeoTIFF
-        # Check if orthomosaic is built
-        if chunk.orthomosaic is None:
+        # Check if orthomosaic is built in project
+        if chunk.orthomosaic is None and not ortho_file_exists:
             logger.warning("⚠️  Orthomosaic not built yet. Cannot export GeoTIFF.")
             logger.warning("  Make sure 'Build orthomosaic' step completed successfully.")
-            ortho_path = output_path / f"{product_id}.tif"
         else:
-            ortho_path = output_path / f"{product_id}.tif"
-            
             # Check if we should skip export
-            if ortho_path.exists() and not clean_intermediate_files:
+            if ortho_file_exists:
+                # Already logged above, just skip export
+                pass
+            elif ortho_path.exists() and not clean_intermediate_files:
                 existing_size_mb = ortho_path.stat().st_size / (1024 * 1024)
                 logger.info(f"✓ Orthomosaic GeoTIFF already exists: {ortho_path}")
                 logger.info(f"  File size: {existing_size_mb:.2f} MB")
