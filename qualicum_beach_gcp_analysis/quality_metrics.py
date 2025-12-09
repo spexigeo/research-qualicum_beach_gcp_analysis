@@ -530,10 +530,96 @@ def calculate_structural_similarity(
     return float(similarity)
 
 
+def downsample_to_match_resolution(
+    source_path: Path,
+    target_resolution_meters: float,
+    output_path: Optional[Path] = None
+) -> Tuple[np.ndarray, Dict]:
+    """
+    Downsample an orthomosaic to match a target resolution (e.g., basemap resolution).
+    
+    Args:
+        source_path: Path to source orthomosaic GeoTIFF
+        target_resolution_meters: Target resolution in meters per pixel
+        output_path: Optional path to save downsampled GeoTIFF
+        
+    Returns:
+        Tuple of (downsampled_array, metadata_dict)
+    """
+    with rasterio.open(source_path) as src:
+        # Get current resolution
+        transform = src.transform
+        current_res_x = abs(transform[0])
+        current_res_y = abs(transform[4])
+        current_res = (current_res_x + current_res_y) / 2.0
+        
+        # Calculate downsampling factor
+        downsample_factor = current_res / target_resolution_meters
+        
+        logger.info(f"Downsampling orthomosaic: {current_res:.4f}m/pixel -> {target_resolution_meters:.4f}m/pixel")
+        logger.info(f"Downsample factor: {downsample_factor:.2f}x")
+        
+        if downsample_factor < 1.0:
+            logger.warning(f"Target resolution ({target_resolution_meters:.4f}m) is finer than source ({current_res:.4f}m). No downsampling needed.")
+            downsample_factor = 1.0
+        
+        # Calculate new dimensions
+        new_width = int(src.width / downsample_factor)
+        new_height = int(src.height / downsample_factor)
+        
+        # Create new transform with target resolution
+        new_transform = rasterio.Affine(
+            target_resolution_meters * (1 if transform[0] >= 0 else -1),
+            transform[1],
+            transform[2],
+            transform[3],
+            -target_resolution_meters * (1 if transform[4] >= 0 else -1),
+            transform[5]
+        )
+        
+        # Read and downsample
+        data = src.read(
+            out_shape=(src.count, new_height, new_width),
+            resampling=Resampling.bilinear
+        )
+        
+        metadata = {
+            'original_resolution': current_res,
+            'target_resolution': target_resolution_meters,
+            'downsample_factor': downsample_factor,
+            'original_shape': (src.height, src.width),
+            'downsampled_shape': (new_height, new_width),
+            'crs': src.crs,
+            'transform': new_transform,
+            'bounds': rasterio.transform.array_bounds(new_height, new_width, new_transform)
+        }
+        
+        # Save if output path provided
+        if output_path:
+            output_path = Path(output_path)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            with rasterio.open(
+                output_path,
+                'w',
+                driver='GTiff',
+                height=new_height,
+                width=new_width,
+                count=src.count,
+                dtype=src.dtypes[0],
+                crs=src.crs,
+                transform=new_transform,
+                compress='lzw'
+            ) as dst:
+                dst.write(data)
+            logger.info(f"Saved downsampled orthomosaic to: {output_path}")
+        
+        return data, metadata
+
+
 def compute_feature_matching_2d_error(
     ortho_array: np.ndarray,
     reference_array: np.ndarray,
-    method: str = 'sift'
+    method: str = 'orb'  # Changed default to ORB
 ) -> Dict:
     """
     Compute 2D error measures using feature matching between orthomosaic and reference.
@@ -590,7 +676,7 @@ def compute_feature_matching_2d_error(
         try:
             if method == 'sift':
                 detector = cv2.SIFT_create(nfeatures=5000, contrastThreshold=0.01, edgeThreshold=20)
-            else:  # orb
+            else:  # orb (default and preferred)
                 detector = cv2.ORB_create(nfeatures=5000, scaleFactor=1.2, nlevels=10)
             
             # Detect keypoints and descriptors
@@ -766,7 +852,8 @@ def compute_feature_matching_2d_error(
 def compare_orthomosaic_to_basemap(
     ortho_path: Path,
     basemap_path: Path,
-    output_dir: Optional[Path] = None
+    output_dir: Optional[Path] = None,
+    downsample_for_matching: bool = True
 ) -> Dict:
     """
     Comprehensive comparison of orthomosaic against reference basemap.
@@ -775,11 +862,20 @@ def compare_orthomosaic_to_basemap(
         ortho_path: Path to orthomosaic GeoTIFF
         basemap_path: Path to reference basemap GeoTIFF
         output_dir: Optional directory for intermediate outputs
+        downsample_for_matching: If True, downsample orthomosaic to match basemap resolution for feature matching
         
     Returns:
         Dictionary with comprehensive quality metrics
     """
     logger.info(f"Comparing orthomosaic {ortho_path.name} to basemap {basemap_path.name}")
+    
+    # Get basemap resolution for downsampling
+    with rasterio.open(basemap_path) as ref:
+        ref_transform = ref.transform
+        basemap_res_x = abs(ref_transform[0])
+        basemap_res_y = abs(ref_transform[4])
+        basemap_resolution = (basemap_res_x + basemap_res_y) / 2.0
+        logger.info(f"Basemap resolution: {basemap_resolution:.4f} meters per pixel")
     
     # Reproject orthomosaic to match basemap
     reprojected_path = None
@@ -787,6 +883,33 @@ def compare_orthomosaic_to_basemap(
         reprojected_path = output_dir / f"reprojected_{ortho_path.stem}.tif"
     
     ortho_reproj, metadata = reproject_to_match(ortho_path, basemap_path, reprojected_path)
+    
+    # Downsample orthomosaic to match basemap resolution for feature matching
+    ortho_for_matching = ortho_reproj
+    if downsample_for_matching:
+        with rasterio.open(ortho_path) as src:
+            src_transform = src.transform
+            ortho_res_x = abs(src_transform[0])
+            ortho_res_y = abs(src_transform[4])
+            ortho_resolution = (ortho_res_x + ortho_res_y) / 2.0
+        
+        if ortho_resolution < basemap_resolution:
+            logger.info(f"Downsampling orthomosaic from {ortho_resolution:.4f}m to {basemap_resolution:.4f}m for feature matching")
+            downsample_factor = ortho_resolution / basemap_resolution
+            new_height = int(ortho_reproj.shape[1] * downsample_factor)
+            new_width = int(ortho_reproj.shape[2] * downsample_factor)
+            
+            # Downsample using scipy
+            ortho_for_matching = np.zeros((ortho_reproj.shape[0], new_height, new_width), dtype=ortho_reproj.dtype)
+            for band_idx in range(ortho_reproj.shape[0]):
+                ortho_for_matching[band_idx] = zoom(
+                    ortho_reproj[band_idx],
+                    (downsample_factor, downsample_factor),
+                    order=1  # Bilinear interpolation
+                )
+            logger.info(f"Downsampled orthomosaic shape: {ortho_for_matching.shape}")
+        else:
+            logger.info(f"Orthomosaic resolution ({ortho_resolution:.4f}m) >= basemap resolution ({basemap_resolution:.4f}m). No downsampling needed.")
     
     # Load reference basemap
     with rasterio.open(basemap_path) as ref:
@@ -810,7 +933,9 @@ def compare_orthomosaic_to_basemap(
     }
     
     for band_idx in range(ortho_reproj.shape[0]):
-        ortho_band = ortho_reproj[band_idx]
+        # Use downsampled version for feature matching, original for other metrics
+        ortho_band_for_matching = ortho_for_matching[band_idx] if downsample_for_matching else ortho_reproj[band_idx]
+        ortho_band = ortho_reproj[band_idx]  # Use original resolution for pixel-level metrics
         ref_band = reference_array[band_idx]
         
         # Calculate error metrics
@@ -824,29 +949,26 @@ def compare_orthomosaic_to_basemap(
         similarity = calculate_structural_similarity(ortho_band, ref_band)
         
         # Compute 2D error using feature matching (only for first band to avoid redundancy)
+        # Use ORB only, and ensure matching at same resolution
         errors_2d = {}
         if band_idx == 0:
-            # Try multiple methods, use the best one
-            methods_to_try = []
             if CV2_AVAILABLE:
-                methods_to_try.extend(['sift', 'orb'])
-            if SKIMAGE_AVAILABLE:
-                methods_to_try.extend(['phase', 'template'])
-            
-            best_errors_2d = None
-            best_confidence = 0.0
-            
-            for method in methods_to_try:
                 try:
-                    errors = compute_feature_matching_2d_error(ortho_band, ref_band, method=method)
-                    if errors['match_confidence'] > best_confidence:
-                        best_confidence = errors['match_confidence']
-                        best_errors_2d = errors
+                    # Use downsampled version for matching to ensure same resolution
+                    ref_band_for_matching = ref_band
+                    if downsample_for_matching and ortho_for_matching.shape[1] != ref_band.shape[0]:
+                        # Ensure exact same dimensions
+                        min_height = min(ortho_band_for_matching.shape[0], ref_band.shape[0])
+                        min_width = min(ortho_band_for_matching.shape[1], ref_band.shape[1])
+                        ortho_band_for_matching = ortho_band_for_matching[:min_height, :min_width]
+                        ref_band_for_matching = ref_band[:min_height, :min_width]
+                    
+                    errors_2d = compute_feature_matching_2d_error(ortho_band_for_matching, ref_band_for_matching, method='orb')
+                    logger.info(f"ORB feature matching (at {basemap_resolution:.4f}m resolution): {errors_2d.get('num_matches', 0)} matches, confidence={errors_2d.get('match_confidence', 0.0):.3f}")
                 except Exception as e:
-                    logger.debug(f"Feature matching method {method} failed: {e}")
-            
-            if best_errors_2d:
-                errors_2d = best_errors_2d
+                    logger.warning(f"ORB feature matching failed: {e}")
+            else:
+                logger.warning("OpenCV not available. ORB feature matching disabled.")
         
         metrics['bands'][f'band_{band_idx+1}'] = {
             'rmse': float(rmse) if not np.isnan(rmse) else None,
