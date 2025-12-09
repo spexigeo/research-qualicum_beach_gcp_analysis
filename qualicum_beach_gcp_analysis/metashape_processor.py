@@ -32,78 +32,23 @@ Image.MAX_IMAGE_PIXELS = None
 
 class TeeOutput:
     """
-    A file-like object that writes to both a file and optionally shows progress messages.
-    Filters MetaShape verbose output and only shows key progress messages.
+    A file-like object that writes ONLY to a log file.
+    All MetaShape verbose output is suppressed from the notebook.
     """
-    def __init__(self, log_file, original_stdout=None, show_progress=True):
+    def __init__(self, log_file, original_stdout=None, show_progress=False):
         self.log_file = log_file
         self.original_stdout = original_stdout
         self.show_progress = show_progress
-        self.buffer = ""
-        
-        # Keywords that indicate important progress messages
-        self.progress_keywords = [
-            "AddPhotos",
-            "MatchPhotos",
-            "AlignCameras",
-            "BuildDepthMaps",
-            "BuildModel",
-            "BuildOrthomosaic",
-            "ExportRaster",
-            "LoadProject",
-            "SaveProject",
-            "ImportMarkers",
-            "OptimizeCameras",
-            "Filtering done",
-            "depth maps filtered",
-            "saved depth maps",
-            "loaded depth map",
-            "Processing",
-            "Progress:",
-            "completed",
-            "finished",
-            "error",
-            "Error",
-            "warning",
-            "Warning"
-        ]
     
     def write(self, text):
-        """Write to both log file and optionally show progress in notebook."""
-        # Always write to log file FIRST (before any filtering)
+        """Write ONLY to log file - suppress all output from notebook."""
+        # Write to log file only
         try:
             self.log_file.write(text)
             self.log_file.flush()  # Ensure it's written immediately
         except Exception as e:
-            # If log file write fails, try to write to original stdout as fallback
-            if self.original_stdout:
-                print(f"[LOG ERROR: {e}]", file=self.original_stdout, flush=True)
-        
-        # Buffer text to check for complete lines
-        self.buffer += text
-        
-        # Process complete lines
-        while '\n' in self.buffer:
-            line, self.buffer = self.buffer.split('\n', 1)
-            line = line.strip()
-            
-            if not line:
-                continue
-            
-            # Check if this line contains progress information
-            if self.show_progress and self.original_stdout:
-                # Show only lines with progress keywords or important status
-                if any(keyword.lower() in line.lower() for keyword in self.progress_keywords):
-                    # Clean up the line for display
-                    display_line = line
-                    # Remove timestamps if present
-                    if ':' in display_line and len(display_line) > 20:
-                        parts = display_line.split(':', 2)
-                        if len(parts) >= 3 and parts[0].replace(' ', '').replace('-', '').isdigit():
-                            display_line = ':'.join(parts[2:]).strip()
-                    
-                    # Show progress message
-                    print(display_line, file=self.original_stdout, flush=True)
+            # If log file write fails, silently continue (don't show in notebook)
+            pass
     
     def flush(self):
         """Flush both outputs."""
@@ -118,14 +63,15 @@ class TeeOutput:
 
 
 @contextmanager
-def redirect_metashape_output(log_file_path: Path, show_progress: bool = True):
+def redirect_metashape_output(log_file_path: Path, show_progress: bool = False):
     """
-    Context manager to redirect MetaShape's stdout/stderr to a log file
-    while keeping logger output and key progress messages visible in the notebook.
+    Context manager to redirect MetaShape's stdout/stderr to a log file ONLY.
+    All MetaShape verbose output is suppressed from the notebook.
+    Only logger messages (from Python logging) will appear in the notebook.
     
     Args:
         log_file_path: Path to the log file
-        show_progress: Whether to show progress messages in notebook (default: True)
+        show_progress: Whether to show progress messages in notebook (default: False - all output goes to log)
     """
     log_file_path.parent.mkdir(parents=True, exist_ok=True)
     
@@ -157,9 +103,9 @@ def redirect_metashape_output(log_file_path: Path, show_progress: bool = True):
     root_logger.addHandler(console_handler)
     
     try:
-        # Create TeeOutput that writes to file and shows progress
-        tee_stdout = TeeOutput(log_file, original_stdout, show_progress=show_progress)
-        tee_stderr = TeeOutput(log_file, original_stdout, show_progress=show_progress)
+        # Create TeeOutput that writes ONLY to file (no output in notebook)
+        tee_stdout = TeeOutput(log_file, original_stdout, show_progress=False)
+        tee_stderr = TeeOutput(log_file, original_stdout, show_progress=False)
         
         # Redirect stdout and stderr to TeeOutput (MetaShape output goes here)
         sys.stdout = tee_stdout
