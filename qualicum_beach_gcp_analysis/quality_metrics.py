@@ -964,8 +964,8 @@ def compute_feature_matching_2d_error(
                     mean_offset_y = float(shift[0])
                     
                     # Validate shift is reasonable (not > 10% of image size)
-            max_reasonable_shift = max(ortho_norm.shape) * 0.1
-            if abs(mean_offset_x) < max_reasonable_shift and abs(mean_offset_y) < max_reasonable_shift:
+                    max_reasonable_shift = max(ortho_norm.shape) * 0.1
+                    if abs(mean_offset_x) < max_reasonable_shift and abs(mean_offset_y) < max_reasonable_shift:
                 rmse_2d = float(np.sqrt(mean_offset_x**2 + mean_offset_y**2))
                 mean_offset_x_meters = mean_offset_x * pixel_resolution if pixel_resolution else None
                 mean_offset_y_meters = mean_offset_y * pixel_resolution if pixel_resolution else None
