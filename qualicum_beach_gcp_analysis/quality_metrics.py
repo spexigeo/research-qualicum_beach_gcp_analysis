@@ -1459,7 +1459,16 @@ def compare_orthomosaic_to_basemap_memory_efficient(
         
         for method in methods_to_try:
             try:
-                errors = compute_feature_matching_2d_error(ortho_sample, ref_sample, method=method)
+                # Get pixel resolution for spatial constraints
+                pixel_res = abs(ref_transform[0]) if pixel_resolution is None else pixel_resolution
+                errors = compute_feature_matching_2d_error(
+                    ortho_sample, ref_sample, 
+                    method=method,
+                    pixel_resolution=pixel_res,
+                    max_spatial_error_meters=10.0,  # 10m max error constraint
+                    use_tiles=False,  # Already downsampled, no need for tiles
+                    use_gpu=True  # Use GPU if available
+                )
                 if errors['match_confidence'] > best_confidence:
                     best_confidence = errors['match_confidence']
                     best_errors_2d = errors
@@ -1584,7 +1593,11 @@ def apply_2d_shift_to_orthomosaic(
                     ortho_band, ref_band, 
                     method=method,
                     pixel_resolution=pixel_resolution,
-                    log_file_path=log_file_path
+                    log_file_path=log_file_path,
+                    max_spatial_error_meters=10.0,  # 10m max error constraint
+                    use_tiles=True,  # Enable tiled processing for large images
+                    tile_size=2048,  # Tile size for processing
+                    use_gpu=True  # Use GPU if available
                 )
                 
                 if errors_2d.get('mean_offset_x') is not None and errors_2d.get('mean_offset_y') is not None:
