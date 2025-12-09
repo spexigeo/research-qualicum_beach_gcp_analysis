@@ -121,7 +121,7 @@ def reproject_to_match_disk_only(
         estimated_size_gb = (width * height * output_count * bytes_per_pixel) / (1024 ** 3)
         use_bigtiff = estimated_size_gb > 3.5
         
-        # Create output file with compression
+        # Create output file with JPEG compression (quality 90) for intermediate files
         with rasterio.open(
             output_path,
             'w',
@@ -132,7 +132,8 @@ def reproject_to_match_disk_only(
             dtype=ref_dtype,
             crs=ref_crs,
             transform=transform,
-            compress='lzw',
+            compress='jpeg',
+            jpeg_quality=90,
             BIGTIFF='YES' if use_bigtiff else 'NO',
             tiled=True,
             blockxsize=512,
@@ -337,7 +338,8 @@ def reproject_to_match(
                 dtype=reprojected.dtype,
                 crs=ref_crs,
                 transform=transform,
-                compress='lzw',
+                compress='jpeg',
+                jpeg_quality=90,
                 BIGTIFF='YES' if use_bigtiff else 'NO',
                 tiled=True,  # Use tiled format for better performance with large files
                 blockxsize=512,
@@ -1123,7 +1125,8 @@ def downsample_ortho_to_basemap_resolution(
             'transform': transform,
             'width': width,
             'height': height,
-            'compress': 'lzw',
+            'compress': 'jpeg',
+            'jpeg_quality': 90,
             'tiled': True
         })
         
