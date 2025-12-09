@@ -713,13 +713,19 @@ def compute_feature_matching_2d_error(
                                 # Match only against nearby descriptors
                                 nearby_des2 = des2[nearby_indices]
                                 matches = matcher.knnMatch(des1[i:i+1], nearby_des2, k=2)
-                                for match_pair in matches:
-                                    if len(match_pair) == 2:
-                                        m, n = match_pair
+                                # matches is a list of lists, each containing 1-2 matches
+                                for match_list in matches:
+                                    if len(match_list) >= 2:
+                                        m, n = match_list[0], match_list[1]
                                         if m.distance < 0.85 * n.distance:
-                                            # Adjust trainIdx to global index
-                                            m.trainIdx = nearby_indices[m.trainIdx]
-                                            good_matches.append(m)
+                                            # Create new match with adjusted trainIdx
+                                            new_match = cv2.DMatch(m.queryIdx, nearby_indices[m.trainIdx], m.distance)
+                                            good_matches.append(new_match)
+                                    elif len(match_list) == 1:
+                                        # Only one match found, use it
+                                        m = match_list[0]
+                                        new_match = cv2.DMatch(m.queryIdx, nearby_indices[m.trainIdx], m.distance)
+                                        good_matches.append(new_match)
                     else:  # orb
                         matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
                         # For each ortho keypoint, find nearby reference keypoints
@@ -732,13 +738,19 @@ def compute_feature_matching_2d_error(
                                 # Match only against nearby descriptors
                                 nearby_des2 = des2[nearby_indices]
                                 matches = matcher.knnMatch(des1[i:i+1], nearby_des2, k=2)
-                                for match_pair in matches:
-                                    if len(match_pair) == 2:
-                                        m, n = match_pair
+                                # matches is a list of lists, each containing 1-2 matches
+                                for match_list in matches:
+                                    if len(match_list) >= 2:
+                                        m, n = match_list[0], match_list[1]
                                         if m.distance < 0.75 * n.distance:  # Lowe's ratio test
-                                            # Adjust trainIdx to global index
-                                            m.trainIdx = nearby_indices[m.trainIdx]
-                                            good_matches.append(m)
+                                            # Create new match with adjusted trainIdx
+                                            new_match = cv2.DMatch(m.queryIdx, nearby_indices[m.trainIdx], m.distance)
+                                            good_matches.append(new_match)
+                                    elif len(match_list) == 1:
+                                        # Only one match found, use it
+                                        m = match_list[0]
+                                        new_match = cv2.DMatch(m.queryIdx, nearby_indices[m.trainIdx], m.distance)
+                                        good_matches.append(new_match)
                     
                     # Sort by distance and take best matches
                     good_matches = sorted(good_matches, key=lambda x: x.distance)[:500]
@@ -1175,7 +1187,11 @@ def compare_orthomosaic_to_basemap(
                         ortho_band, ref_band, 
                         method='orb',
                         pixel_resolution=pixel_resolution,
-                        log_file_path=log_file_path
+                        log_file_path=log_file_path,
+                        max_spatial_error_meters=10.0,  # 10m max error constraint
+                        use_tiles=True,  # Enable tiled processing for large images
+                        tile_size=2048,  # Tile size for processing
+                        use_gpu=True  # Use GPU if available
                     )
                 except Exception as e:
                     logger.warning(f"ORB feature matching failed: {e}")
@@ -1185,7 +1201,11 @@ def compare_orthomosaic_to_basemap(
                         ortho_band, ref_band, 
                         method='sift',
                         pixel_resolution=pixel_resolution,
-                        log_file_path=log_file_path
+                        log_file_path=log_file_path,
+                        max_spatial_error_meters=10.0,  # 10m max error constraint
+                        use_tiles=True,  # Enable tiled processing for large images
+                        tile_size=2048,  # Tile size for processing
+                        use_gpu=True  # Use GPU if available
                     )
                 except Exception as e:
                     logger.warning(f"SIFT feature matching failed: {e}")
@@ -1206,7 +1226,11 @@ def compare_orthomosaic_to_basemap(
                             ortho_band, ref_band, 
                             method=method,
                             pixel_resolution=pixel_resolution,
-                            log_file_path=log_file_path
+                            log_file_path=log_file_path,
+                            max_spatial_error_meters=10.0,  # 10m max error constraint
+                            use_tiles=True,  # Enable tiled processing for large images
+                            tile_size=2048,  # Tile size for processing
+                            use_gpu=True  # Use GPU if available
                         )
                         if errors['match_confidence'] > best_confidence:
                             best_confidence = errors['match_confidence']
