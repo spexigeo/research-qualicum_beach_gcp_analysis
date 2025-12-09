@@ -815,3 +815,88 @@ def bbox_to_h3_cells(
         
         return sorted(list(cells_set))
 
+
+def visualize_feature_matches(
+    ortho_array: np.ndarray,
+    reference_array: np.ndarray,
+    match_pairs: List[Tuple[Tuple[float, float], Tuple[float, float]]],
+    output_path: Path,
+    title: str = "Feature Matches"
+) -> Path:
+    """
+    Visualize feature matches between orthomosaic and reference basemap.
+    
+    Shows orthomosaic on the left, reference on the right, with match pairs
+    shown as points (red for ortho, green for basemap).
+    
+    Args:
+        ortho_array: Orthomosaic array (grayscale or first band)
+        reference_array: Reference basemap array (grayscale or first band)
+        match_pairs: List of (src_point, dst_point) tuples where each point is (x, y)
+        output_path: Path to save visualization
+        title: Title for the plot
+        
+    Returns:
+        Path to saved visualization
+    """
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Normalize arrays for display
+    def normalize_for_display(arr):
+        arr_min, arr_max = arr.min(), arr.max()
+        if arr_max > arr_min:
+            normalized = ((arr - arr_min) / (arr_max - arr_min) * 255).astype(np.uint8)
+        else:
+            normalized = np.zeros_like(arr, dtype=np.uint8)
+        return normalized
+    
+    ortho_display = normalize_for_display(ortho_array)
+    ref_display = normalize_for_display(reference_array)
+    
+    # Create figure with side-by-side layout
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 10))
+    
+    # Display orthomosaic on left
+    ax1.imshow(ortho_display, cmap='gray', interpolation='bilinear')
+    ax1.set_title('Orthomosaic', fontsize=14, fontweight='bold')
+    ax1.axis('off')
+    
+    # Display reference on right
+    ax2.imshow(ref_display, cmap='gray', interpolation='bilinear')
+    ax2.set_title('Reference Basemap', fontsize=14, fontweight='bold')
+    ax2.axis('off')
+    
+    # Draw match pairs with points
+    # Limit to first 100 matches for clarity
+    matches_to_show = match_pairs[:100]
+    
+    for src_pt, dst_pt in matches_to_show:
+        # Left image: plot point at src_pt with red circle
+        ax1.plot(src_pt[0], src_pt[1], 'ro', markersize=3, alpha=0.8, zorder=10)
+        
+        # Right image: plot point at dst_pt with green circle
+        ax2.plot(dst_pt[0], dst_pt[1], 'go', markersize=3, alpha=0.8, zorder=10)
+    
+    # Add text annotation showing number of matches
+    ax1.text(0.02, 0.98, f'{len(matches_to_show)} matches shown', 
+             transform=ax1.transAxes, fontsize=10, verticalalignment='top',
+             bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+    
+    # Add title
+    fig.suptitle(title, fontsize=16, fontweight='bold', y=0.98)
+    
+    # Add legend
+    from matplotlib.patches import Patch
+    legend_elements = [
+        Patch(facecolor='red', label='Ortho Keypoints'),
+        Patch(facecolor='green', label='Basemap Keypoints'),
+    ]
+    fig.legend(handles=legend_elements, loc='upper center', ncol=2, fontsize=10)
+    
+    # Save figure
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    
+    return output_path
