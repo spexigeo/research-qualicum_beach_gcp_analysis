@@ -551,14 +551,15 @@ def process_orthomosaic(
         # Add photos (if not already added)
         photos = []
         if not status['photos_added']:
-            logger.info(f"Adding photos from: {photos_dir}")
+            logger.info(f"📸 Adding photos from: {photos_dir}")
             photos = find_image_files(photos_dir)
             if not photos:
                 raise ValueError(f"No images found in {photos_dir}")
             
-            logger.info(f"Found {len(photos)} images")
+            logger.info(f"  Found {len(photos)} images")
             chunk.addPhotos(photos)
             safe_save_document()
+            logger.info("  ✓ Photos added successfully")
         else:
             logger.info(f"✓ Photos already added ({len(chunk.cameras)} cameras)")
             # Get camera paths - MetaShape Camera objects use 'label' or 'photo' property
