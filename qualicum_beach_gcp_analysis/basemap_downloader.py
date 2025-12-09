@@ -37,8 +37,18 @@ def get_tile_url(xtile: int, ytile: int, zoom: int, source: str = "openstreetmap
         return f"https://tile.openstreetmap.org/{zoom}/{xtile}/{ytile}.png"
     elif source == "esri_world_imagery":
         return f"https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{zoom}/{ytile}/{xtile}"
+    elif source == "google_satellite":
+        # Google Satellite tile URL format
+        # Note: This uses Google's tile service directly. For production/commercial use,
+        # consider using Google Earth Engine API or Google Maps Static API with proper authentication.
+        # lyrs=s = satellite imagery
+        return f"https://mt1.google.com/vt/lyrs=s&x={xtile}&y={ytile}&z={zoom}"
+    elif source == "google_hybrid":
+        # Google Hybrid (satellite + labels)
+        # lyrs=y = hybrid (satellite with labels)
+        return f"https://mt1.google.com/vt/lyrs=y&x={xtile}&y={ytile}&z={zoom}"
     else:
-        raise ValueError(f"Unknown tile source: {source}")
+        raise ValueError(f"Unknown tile source: {source}. Supported: 'openstreetmap', 'esri_world_imagery', 'google_satellite', 'google_hybrid'")
 
 
 def download_tile(xtile: int, ytile: int, zoom: int, source: str = "openstreetmap", 
@@ -165,7 +175,7 @@ def download_basemap(
     Args:
         bbox: Bounding box as (min_lat, min_lon, max_lat, max_lon)
         output_path: Path to save GeoTIFF
-        source: Tile source ('openstreetmap' or 'esri_world_imagery')
+        source: Tile source ('openstreetmap', 'esri_world_imagery', 'google_satellite', or 'google_hybrid')
         zoom: Zoom level (auto-calculated if None)
         target_resolution: Target resolution in meters per pixel
         
@@ -173,6 +183,15 @@ def download_basemap(
         Path to saved GeoTIFF
     """
     min_lat, min_lon, max_lat, max_lon = bbox
+    
+    # Warn about Google tile usage
+    if source in ("google_satellite", "google_hybrid"):
+        import warnings
+        warnings.warn(
+            "Google Satellite tiles: Direct tile access may be subject to Google's Terms of Service. "
+            "For production/commercial use, consider Google Earth Engine API with proper authentication.",
+            UserWarning
+        )
     
     # Validate bounding box
     if min_lat >= max_lat:
@@ -327,8 +346,18 @@ def get_tile_url(xtile: int, ytile: int, zoom: int, source: str = "openstreetmap
         return f"https://tile.openstreetmap.org/{zoom}/{xtile}/{ytile}.png"
     elif source == "esri_world_imagery":
         return f"https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{zoom}/{ytile}/{xtile}"
+    elif source == "google_satellite":
+        # Google Satellite tile URL format
+        # Note: This uses Google's tile service directly. For production/commercial use,
+        # consider using Google Earth Engine API or Google Maps Static API with proper authentication.
+        # lyrs=s = satellite imagery
+        return f"https://mt1.google.com/vt/lyrs=s&x={xtile}&y={ytile}&z={zoom}"
+    elif source == "google_hybrid":
+        # Google Hybrid (satellite + labels)
+        # lyrs=y = hybrid (satellite with labels)
+        return f"https://mt1.google.com/vt/lyrs=y&x={xtile}&y={ytile}&z={zoom}"
     else:
-        raise ValueError(f"Unknown tile source: {source}")
+        raise ValueError(f"Unknown tile source: {source}. Supported: 'openstreetmap', 'esri_world_imagery', 'google_satellite', 'google_hybrid'")
 
 
 def download_tile(xtile: int, ytile: int, zoom: int, source: str = "openstreetmap", 
@@ -455,7 +484,7 @@ def download_basemap(
     Args:
         bbox: Bounding box as (min_lat, min_lon, max_lat, max_lon)
         output_path: Path to save GeoTIFF
-        source: Tile source ('openstreetmap' or 'esri_world_imagery')
+        source: Tile source ('openstreetmap', 'esri_world_imagery', 'google_satellite', or 'google_hybrid')
         zoom: Zoom level (auto-calculated if None)
         target_resolution: Target resolution in meters per pixel
         
@@ -463,6 +492,15 @@ def download_basemap(
         Path to saved GeoTIFF
     """
     min_lat, min_lon, max_lat, max_lon = bbox
+    
+    # Warn about Google tile usage
+    if source in ("google_satellite", "google_hybrid"):
+        import warnings
+        warnings.warn(
+            "Google Satellite tiles: Direct tile access may be subject to Google's Terms of Service. "
+            "For production/commercial use, consider Google Earth Engine API with proper authentication.",
+            UserWarning
+        )
     
     # Validate bounding box
     if min_lat >= max_lat:
@@ -617,8 +655,18 @@ def get_tile_url(xtile: int, ytile: int, zoom: int, source: str = "openstreetmap
         return f"https://tile.openstreetmap.org/{zoom}/{xtile}/{ytile}.png"
     elif source == "esri_world_imagery":
         return f"https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{zoom}/{ytile}/{xtile}"
+    elif source == "google_satellite":
+        # Google Satellite tile URL format
+        # Note: This uses Google's tile service directly. For production/commercial use,
+        # consider using Google Earth Engine API or Google Maps Static API with proper authentication.
+        # lyrs=s = satellite imagery
+        return f"https://mt1.google.com/vt/lyrs=s&x={xtile}&y={ytile}&z={zoom}"
+    elif source == "google_hybrid":
+        # Google Hybrid (satellite + labels)
+        # lyrs=y = hybrid (satellite with labels)
+        return f"https://mt1.google.com/vt/lyrs=y&x={xtile}&y={ytile}&z={zoom}"
     else:
-        raise ValueError(f"Unknown tile source: {source}")
+        raise ValueError(f"Unknown tile source: {source}. Supported: 'openstreetmap', 'esri_world_imagery', 'google_satellite', 'google_hybrid'")
 
 
 def download_tile(xtile: int, ytile: int, zoom: int, source: str = "openstreetmap", 
@@ -745,7 +793,7 @@ def download_basemap(
     Args:
         bbox: Bounding box as (min_lat, min_lon, max_lat, max_lon)
         output_path: Path to save GeoTIFF
-        source: Tile source ('openstreetmap' or 'esri_world_imagery')
+        source: Tile source ('openstreetmap', 'esri_world_imagery', 'google_satellite', or 'google_hybrid')
         zoom: Zoom level (auto-calculated if None)
         target_resolution: Target resolution in meters per pixel
         
@@ -753,6 +801,15 @@ def download_basemap(
         Path to saved GeoTIFF
     """
     min_lat, min_lon, max_lat, max_lon = bbox
+    
+    # Warn about Google tile usage
+    if source in ("google_satellite", "google_hybrid"):
+        import warnings
+        warnings.warn(
+            "Google Satellite tiles: Direct tile access may be subject to Google's Terms of Service. "
+            "For production/commercial use, consider Google Earth Engine API with proper authentication.",
+            UserWarning
+        )
     
     # Validate bounding box
     if min_lat >= max_lat:
