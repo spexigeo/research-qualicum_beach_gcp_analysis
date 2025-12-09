@@ -10,7 +10,8 @@ from pathlib import Path
 
 def export_to_metashape_csv(
     gcps: List[Dict],
-    output_path: str
+    output_path: str,
+    accuracy: float = 0.005
 ) -> str:
     """
     Export GCPs to MetaShape CSV format (tab-separated).
@@ -43,11 +44,14 @@ def export_to_metashape_csv(
             lat = gcp.get('lat', gcp.get('latitude', 0.0))
             z = gcp.get('z', gcp.get('elevation', gcp.get('altitude', 0.0)))
             # Use high accuracy (low value) for high weight in bundle adjustment
-            # Default to 0.05m (5cm) if not specified - this gives high weight
-            accuracy = gcp.get('accuracy', gcp.get('rmse', 0.05))
+            # Default to 0.005m (5mm) if not specified - this gives very high weight
+            # Can be overridden by accuracy parameter or individual GCP accuracy
+            gcp_accuracy = gcp.get('accuracy', gcp.get('rmse', accuracy))
+            # Use the more accurate (lower) value
+            final_accuracy = min(gcp_accuracy, accuracy)
             enabled = '1'  # Default to enabled
             
-            writer.writerow([label, lon, lat, z, accuracy, enabled])
+            writer.writerow([label, lon, lat, z, final_accuracy, enabled])
     
     print(f"Exported {len(gcps)} GCPs to MetaShape CSV: {output_path}")
     return str(output_path)
@@ -55,7 +59,8 @@ def export_to_metashape_csv(
 
 def export_to_metashape_xml(
     gcps: List[Dict],
-    output_path: str
+    output_path: str,
+    accuracy: float = 0.005
 ) -> str:
     """
     Export GCPs as MetaShape marker file (XML format).
@@ -92,12 +97,15 @@ def export_to_metashape_xml(
         position.set('z', str(z))
         
         # Accuracy - use high accuracy (low value) for high weight in bundle adjustment
-        # Default to 0.05m (5cm) if not specified - this gives high weight
-        accuracy = gcp.get('accuracy', gcp.get('rmse', 0.05))
+        # Default to 0.005m (5mm) if not specified - this gives very high weight
+        # Can be overridden by accuracy parameter or individual GCP accuracy
+        gcp_accuracy = gcp.get('accuracy', gcp.get('rmse', accuracy))
+        # Use the more accurate (lower) value
+        final_accuracy = min(gcp_accuracy, accuracy)
         accuracy_elem = ET.SubElement(marker, 'accuracy')
-        accuracy_elem.set('x', str(accuracy))
-        accuracy_elem.set('y', str(accuracy))
-        accuracy_elem.set('z', str(accuracy))
+        accuracy_elem.set('x', str(final_accuracy))
+        accuracy_elem.set('y', str(final_accuracy))
+        accuracy_elem.set('z', str(final_accuracy))
     
     tree = ET.ElementTree(root)
     ET.indent(tree, space='  ')
@@ -110,7 +118,8 @@ def export_to_metashape_xml(
 def export_to_metashape(
     gcps: List[Dict],
     output_path: str,
-    format: str = 'csv'
+    format: str = 'csv',
+    accuracy: float = 0.005
 ) -> str:
     """
     Export GCPs for MetaShape in the specified format.
@@ -119,11 +128,13 @@ def export_to_metashape(
         gcps: List of GCP dictionaries
         output_path: Path to output file
         format: Export format ('csv' or 'xml')
+        accuracy: GCP accuracy in meters. Lower values = higher weight in bundle adjustment.
+                 Default 0.005m (5mm) gives very high weight.
         
     Returns:
         Path to saved file
     """
     if format == 'xml':
-        return export_to_metashape_xml(gcps, output_path)
+        return export_to_metashape_xml(gcps, output_path, accuracy=accuracy)
     else:
-        return export_to_metashape_csv(gcps, output_path)
+        return export_to_metashape_csv(gcps, output_path, accuracy=accuracy)
