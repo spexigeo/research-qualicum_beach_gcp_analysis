@@ -782,7 +782,7 @@ def process_orthomosaic(
         # Set Marker (GCP) Accuracy - use gcp_accuracy parameter (default 0.05m = 5cm)
         # Lower values = higher weight in bundle adjustment
         # 0.05m (5cm) gives very high weight compared to 10m camera accuracy
-        marker_accuracy = gcp_accuracy if use_gcps else (0.005, 0.005, 0.005)  # Default 5mm if not using GCPs
+        marker_accuracy = gcp_accuracy if use_gcps else 0.005  # Default 5mm if not using GCPs
         chunk.marker_location_accuracy = (marker_accuracy, marker_accuracy, marker_accuracy)  # (x, y, z) in meters
         if use_gcps:
             logger.info(f"  ✓ Marker (GCP) location accuracy set to {marker_accuracy}m ({marker_accuracy*1000:.1f}mm)")
