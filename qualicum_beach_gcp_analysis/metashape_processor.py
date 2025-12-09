@@ -640,6 +640,7 @@ def process_orthomosaic(
                 tiepoint_limit=tiepoint_limit,
             )
             safe_save_document()
+            logger.info("  ✓ Photo matching complete")
         else:
             # Get tie points count safely
             tie_points_count = 0
@@ -649,7 +650,7 @@ def process_orthomosaic(
                     tie_points_count = len(points) if points is not None else 0
                 except (AttributeError, TypeError):
                     tie_points_count = 0
-            logger.info(f"✓ Photos already matched ({tie_points_count} tie points)")
+            logger.info(f"✓ Photos already matched ({tie_points_count} tie points) - REUSING existing results")
         
         # Align cameras (if not already aligned)
         if not status['cameras_aligned']:
@@ -692,6 +693,7 @@ def process_orthomosaic(
                 filter_mode=Metashape.MildFiltering
             )
             safe_save_document()
+            logger.info("  ✓ Depth maps built")
         else:
             # Get depth maps count safely
             depth_maps_count = 0
@@ -703,7 +705,7 @@ def process_orthomosaic(
                         depth_maps_count = sum(1 for _ in chunk.depth_maps)
                 except (TypeError, AttributeError):
                     depth_maps_count = 0
-            logger.info(f"✓ Depth maps already built ({depth_maps_count} depth maps)")
+            logger.info(f"✓ Depth maps already built ({depth_maps_count} depth maps) - REUSING existing results")
         
         # Build 3D model (if not already built)
         if not status['model_built']:
@@ -819,7 +821,7 @@ def process_orthomosaic(
                         # Different error, re-raise
                         raise
         else:
-            logger.info("✓ 3D model already built")
+            logger.info("✓ 3D model already built - REUSING existing results")
         
         # Build orthomosaic (if not already built)
         if not status['orthomosaic_built']:
@@ -864,7 +866,7 @@ def process_orthomosaic(
                         # Different error, re-raise
                         raise
         else:
-            logger.info("✓ Orthomosaic already built")
+            logger.info("✓ Orthomosaic already built - REUSING existing results")
         
         # Export GeoTIFF
         # Check if orthomosaic is built
