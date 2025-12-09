@@ -1,0 +1,128 @@
+{
+  "ortho_path": "outputs/orthomosaics_gcp_aligned/orthomosaic_with_gcps_gcp_aligned.tif",
+  "basemap_path": "outputs/qualicum_beach_basemap_esri.tif",
+  "num_bands": 3,
+  "bands": {
+    "band_1": {
+      "rmse": 10.223383011822555,
+      "mae": 155.143563646789,
+      "similarity": 0.5408202252370236,
+      "seamlines": {
+        "total_pixels": 52371,
+        "seamline_pixels": "5349",
+        "seamline_percentage": 10.213667869622501,
+        "max_gradient": 180.31222534179688,
+        "mean_gradient": 6.193458080291748,
+        "gradient_std": 19.953889846801758
+      },
+      "errors_2d": {
+        "method": "orb",
+        "mean_offset_x": -1.9765714406967163,
+        "mean_offset_y": -5.6605706214904785,
+        "rmse_2d": 18.69572639465332,
+        "num_matches": 14,
+        "match_confidence": 0.10916506499052048,
+        "offsets": [
+          [
+            0.0,
+            0.0
+          ],
+          [
+            -46.08000183105469,
+            -15.839996337890625
+          ],
+          [
+            6.768001556396484,
+            -44.68798828125
+          ],
+          [
+            1.0,
+            1.0
+          ],
+          [
+            -1.0,
+            0.0
+          ],
+          [
+            1.9999923706054688,
+            -13.400001525878906
+          ],
+          [
+            1.0,
+            0.0
+          ],
+          [
+            1.0,
+            0.0
+          ],
+          [
+            11.0,
+            4.0
+          ],
+          [
+            -2.0,
+            0.0
+          ],
+          [
+            0.2400054931640625,
+            -11.519996643066406
+          ],
+          [
+            -0.20000457763671875,
+            2.399993896484375
+          ],
+          [
+            -2.399993896484375,
+            -1.1999969482421875
+          ],
+          [
+            1.0,
+            0.0
+          ]
+        ]
+      }
+    },
+    "band_2": {
+      "rmse": 10.089656855350215,
+      "mae": 146.51978211009174,
+      "similarity": 0.5673050603439429,
+      "seamlines": {
+        "total_pixels": 52371,
+        "seamline_pixels": "4892",
+        "seamline_percentage": 9.341047526302726,
+        "max_gradient": 180.31222534179688,
+        "mean_gradient": 5.852673053741455,
+        "gradient_std": 19.49152946472168
+      },
+      "errors_2d": {}
+    },
+    "band_3": {
+      "rmse": 10.166113681885445,
+      "mae": 156.56755788115547,
+      "similarity": 0.6075152852945346,
+      "seamlines": {
+        "total_pixels": 52371,
+        "seamline_pixels": "5376",
+        "seamline_percentage": 10.265223119665464,
+        "max_gradient": 180.31222534179688,
+        "mean_gradient": 6.319214344024658,
+        "gradient_std": 20.37948226928711
+      },
+      "errors_2d": {}
+    }
+  },
+  "overall": {
+    "rmse": 10.159717849686071,
+    "mae": 152.7436345460121,
+    "similarity": 0.5718801902918337,
+    "seamline_percentage": 9.939979505196897,
+    "errors_2d": {
+      "mean_offset_x_pixels": -1.9765714406967163,
+      "mean_offset_y_pixels": -5.6605706214904785,
+      "rmse_2d_pixels": 18.69572639465332,
+      "num_matches": 14,
+      "match_confidence": 0.10916506499052048,
+      "method": "orb"
+    }
+  }
+}

@@ -1,0 +1,56 @@
+{
+  "ortho_path": "outputs/orthomosaics/orthomosaic_no_gcps.tif",
+  "basemap_path": "outputs/qualicum_beach_basemap_osm.tif",
+  "num_bands": 3,
+  "bands": {
+    "band_1": {
+      "rmse": 9.999043102153106,
+      "mae": 106.39858084862385,
+      "similarity": 0.36308094931983204,
+      "seamlines": {
+        "total_pixels": 52371,
+        "seamline_pixels": 5353,
+        "seamline_percentage": 10.221305684443681,
+        "max_gradient": 180.31222534179688,
+        "mean_gradient": 6.201480388641357,
+        "gradient_std": 19.97943878173828
+      },
+      "errors_2d": {}
+    },
+    "band_2": {
+      "rmse": 9.621860711683883,
+      "mae": 104.51842029816514,
+      "similarity": 0.4435165876214848,
+      "seamlines": {
+        "total_pixels": 52371,
+        "seamline_pixels": 4894,
+        "seamline_percentage": 9.344866433713314,
+        "max_gradient": 180.31222534179688,
+        "mean_gradient": 5.862626552581787,
+        "gradient_std": 19.515869140625
+      },
+      "errors_2d": {}
+    },
+    "band_3": {
+      "rmse": 9.880645233453016,
+      "mae": 100.0395642201835,
+      "similarity": 0.4491634828633625,
+      "seamlines": {
+        "total_pixels": 52371,
+        "seamline_pixels": 5369,
+        "seamline_percentage": 10.251856943728399,
+        "max_gradient": 180.31222534179688,
+        "mean_gradient": 6.326008319854736,
+        "gradient_std": 20.406185150146484
+      },
+      "errors_2d": {}
+    }
+  },
+  "overall": {
+    "rmse": 9.833849682430001,
+    "mae": 103.6521884556575,
+    "similarity": 0.4185870066015598,
+    "seamline_percentage": 9.939343020628465,
+    "errors_2d": {}
+  }
+}

@@ -533,7 +533,9 @@ def calculate_structural_similarity(
 def compute_feature_matching_2d_error(
     ortho_array: np.ndarray,
     reference_array: np.ndarray,
-    method: str = 'sift'
+    method: str = 'sift',
+    pixel_resolution: Optional[float] = None,
+    log_file_path: Optional[Path] = None
 ) -> Dict:
     """
     Compute 2D error measures using feature matching between orthomosaic and reference.
@@ -582,8 +584,21 @@ def compute_feature_matching_2d_error(
         'rmse_2d': None,
         'num_matches': 0,
         'match_confidence': 0.0,
-        'offsets': []
+        'offsets': [],
+        'match_pairs': [],  # List of (src_point, dst_point) tuples in pixels
+        'mean_offset_x_meters': None,
+        'mean_offset_y_meters': None,
+        'rmse_2d_meters': None
     }
+    
+    # Setup log file if provided
+    log_file = None
+    if log_file_path:
+        log_file_path = Path(log_file_path)
+        log_file_path.parent.mkdir(parents=True, exist_ok=True)
+        log_file = open(log_file_path, 'w', encoding='utf-8')
+        log_file.write(f"Feature Matching Results ({method.upper()})\n")
+        log_file.write("=" * 60 + "\n\n")
     
     if method in ['sift', 'orb'] and CV2_AVAILABLE:
         # Use OpenCV feature matching
@@ -635,6 +650,9 @@ def compute_feature_matching_2d_error(
                     src_pts = np.float32([kp1[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
                     dst_pts = np.float32([kp2[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
                     
+                    # Store match pairs for visualization
+                    match_pairs = [(tuple(src_pts[i, 0, :]), tuple(dst_pts[i, 0, :])) for i in range(len(good_matches))]
+                    
                     # Calculate offsets
                     offsets = dst_pts - src_pts
                     offsets_flat = offsets.reshape(-1, 2)
@@ -645,6 +663,11 @@ def compute_feature_matching_2d_error(
                     # Calculate 2D RMSE
                     distances = np.sqrt(offsets_flat[:, 0]**2 + offsets_flat[:, 1]**2)
                     rmse_2d = np.sqrt(np.mean(distances**2))
+                    
+                    # Convert to meters if pixel resolution provided
+                    mean_offset_x_meters = mean_offset_x * pixel_resolution if pixel_resolution else None
+                    mean_offset_y_meters = mean_offset_y * pixel_resolution if pixel_resolution else None
+                    rmse_2d_meters = rmse_2d * pixel_resolution if pixel_resolution else None
                     
                     # Confidence based on number of matches and consistency
                     match_confidence = min(1.0, len(good_matches) / 50.0)  # Normalize to 0-1
@@ -661,14 +684,47 @@ def compute_feature_matching_2d_error(
                             'rmse_2d': float(rmse_2d),
                             'num_matches': len(good_matches),
                             'match_confidence': float(match_confidence),
-                            'offsets': offsets_flat.tolist()
+                            'offsets': offsets_flat.tolist(),
+                            'match_pairs': match_pairs,
+                            'mean_offset_x_meters': mean_offset_x_meters,
+                            'mean_offset_y_meters': mean_offset_y_meters,
+                            'rmse_2d_meters': rmse_2d_meters
                         })
                         
                         logger.info(f"Feature matching ({method}): {len(good_matches)} matches, "
                                   f"offset=({mean_offset_x:.2f}, {mean_offset_y:.2f}) px, "
                                   f"RMSE_2D={rmse_2d:.2f} px")
+                        if pixel_resolution:
+                            logger.info(f"  In meters: offset=({mean_offset_x_meters:.4f}, {mean_offset_y_meters:.4f}) m, "
+                                      f"RMSE_2D={rmse_2d_meters:.4f} m")
+                        
+                        # Write detailed results to log file
+                        if log_file:
+                            log_file.write(f"Method: {method.upper()}\n")
+                            log_file.write(f"Number of matches: {len(good_matches)}\n")
+                            log_file.write(f"Match confidence: {match_confidence:.4f}\n\n")
+                            log_file.write(f"Offset (pixels): X={mean_offset_x:.4f}, Y={mean_offset_y:.4f}\n")
+                            log_file.write(f"RMSE 2D (pixels): {rmse_2d:.4f}\n")
+                            if pixel_resolution:
+                                log_file.write(f"Pixel resolution: {pixel_resolution:.4f} m/pixel\n")
+                                log_file.write(f"Offset (meters): X={mean_offset_x_meters:.4f}, Y={mean_offset_y_meters:.4f}\n")
+                                log_file.write(f"RMSE 2D (meters): {rmse_2d_meters:.4f}\n")
+                            log_file.write(f"\nMatch Pairs (after RANSAC):\n")
+                            log_file.write(f"{'Match':<8} {'Ortho Pixel (x,y)':<25} {'Basemap Pixel (x,y)':<25} {'Offset (px)':<20} {'Distance (px)':<15}\n")
+                            log_file.write("-" * 100 + "\n")
+                            for i, (src_pt, dst_pt) in enumerate(match_pairs):
+                                offset_x = dst_pt[0] - src_pt[0]
+                                offset_y = dst_pt[1] - src_pt[1]
+                                dist = np.sqrt(offset_x**2 + offset_y**2)
+                                log_file.write(f"{i+1:<8} ({src_pt[0]:>8.2f}, {src_pt[1]:>8.2f})  ({dst_pt[0]:>8.2f}, {dst_pt[1]:>8.2f})  "
+                                            f"({offset_x:>7.2f}, {offset_y:>7.2f})  {dist:>10.2f}\n")
+                            log_file.write("\n")
                     else:
                         logger.warning(f"Feature matching ({method}) shift ({mean_offset_x:.1f}, {mean_offset_y:.1f}) too large, rejecting")
+                        if log_file:
+                            log_file.write(f"WARNING: Shift too large, rejected\n")
+                            log_file.write(f"  Shift: ({mean_offset_x:.2f}, {mean_offset_y:.2f}) pixels\n")
+                            log_file.write(f"  Max reasonable: {max_reasonable_shift:.2f} pixels\n")
         except Exception as e:
             logger.warning(f"Feature matching ({method}) failed: {e}")
     
@@ -745,20 +801,40 @@ def compute_feature_matching_2d_error(
                     # Validate shift is reasonable (not > 10% of image size)
                     max_reasonable_shift = max(ortho_norm.shape) * 0.1
                     if abs(mean_offset_x) < max_reasonable_shift and abs(mean_offset_y) < max_reasonable_shift:
+                        rmse_2d = float(np.sqrt(mean_offset_x**2 + mean_offset_y**2))
+                        mean_offset_x_meters = mean_offset_x * pixel_resolution if pixel_resolution else None
+                        mean_offset_y_meters = mean_offset_y * pixel_resolution if pixel_resolution else None
+                        rmse_2d_meters = rmse_2d * pixel_resolution if pixel_resolution else None
+                        
                         errors_2d.update({
                             'mean_offset_x': mean_offset_x,
                             'mean_offset_y': mean_offset_y,
-                            'rmse_2d': float(np.sqrt(mean_offset_x**2 + mean_offset_y**2)),
+                            'rmse_2d': rmse_2d,
                             'num_matches': int(np.sum(edges1 > 0) + np.sum(edges2 > 0)),  # Edge pixel count
                             'match_confidence': float(1.0 - min(1.0, error)),
+                            'mean_offset_x_meters': mean_offset_x_meters,
+                            'mean_offset_y_meters': mean_offset_y_meters,
+                            'rmse_2d_meters': rmse_2d_meters
                         })
                         logger.info(f"Line/edge matching: offset=({mean_offset_x:.2f}, {mean_offset_y:.2f}) px, error={error:.4f}")
+                        if log_file:
+                            log_file.write(f"Method: LINES/EDGES\n")
+                            log_file.write(f"Offset (pixels): X={mean_offset_x:.4f}, Y={mean_offset_y:.4f}\n")
+                            log_file.write(f"RMSE 2D (pixels): {rmse_2d:.4f}\n")
+                            if pixel_resolution:
+                                log_file.write(f"Offset (meters): X={mean_offset_x_meters:.4f}, Y={mean_offset_y_meters:.4f}\n")
+                                log_file.write(f"RMSE 2D (meters): {rmse_2d_meters:.4f}\n")
                     else:
                         logger.warning(f"Line/edge matching shift ({mean_offset_x:.1f}, {mean_offset_y:.1f}) too large, rejecting")
                 except Exception as e:
                     logger.debug(f"Phase correlation on edges failed: {e}")
         except Exception as e:
             logger.warning(f"Line/edge matching failed: {e}")
+    
+    # Close log file if opened
+    if log_file:
+        log_file.close()
+        logger.info(f"Feature matching log saved to: {log_file_path}")
     
     return errors_2d
 
@@ -923,15 +999,36 @@ def compare_orthomosaic_to_basemap(
         # Compute 2D error using feature matching (only for first band to avoid redundancy)
         errors_2d = {}
         if band_idx == 0:
+            # Get pixel resolution from reference basemap for meter conversion
+            with rasterio.open(basemap_path) as ref:
+                pixel_resolution = abs(ref.transform[0])  # Pixel size in meters
+            
+            # Setup log file path for detailed matching results
+            log_file_path = None
+            if output_dir:
+                log_dir = Path(output_dir) / "logs"
+                log_dir.mkdir(parents=True, exist_ok=True)
+                log_file_path = log_dir / f"feature_matching_{Path(ortho_path).stem}_{Path(basemap_path).stem}.log"
+            
             # Use specified method (default: ORB only)
             if feature_matching_method.lower() == 'orb' and CV2_AVAILABLE:
                 try:
-                    errors_2d = compute_feature_matching_2d_error(ortho_band, ref_band, method='orb')
+                    errors_2d = compute_feature_matching_2d_error(
+                        ortho_band, ref_band, 
+                        method='orb',
+                        pixel_resolution=pixel_resolution,
+                        log_file_path=log_file_path
+                    )
                 except Exception as e:
                     logger.warning(f"ORB feature matching failed: {e}")
             elif feature_matching_method.lower() == 'sift' and CV2_AVAILABLE:
                 try:
-                    errors_2d = compute_feature_matching_2d_error(ortho_band, ref_band, method='sift')
+                    errors_2d = compute_feature_matching_2d_error(
+                        ortho_band, ref_band, 
+                        method='sift',
+                        pixel_resolution=pixel_resolution,
+                        log_file_path=log_file_path
+                    )
                 except Exception as e:
                     logger.warning(f"SIFT feature matching failed: {e}")
             else:
@@ -947,7 +1044,12 @@ def compare_orthomosaic_to_basemap(
                 
                 for method in methods_to_try:
                     try:
-                        errors = compute_feature_matching_2d_error(ortho_band, ref_band, method=method)
+                        errors = compute_feature_matching_2d_error(
+                            ortho_band, ref_band, 
+                            method=method,
+                            pixel_resolution=pixel_resolution,
+                            log_file_path=log_file_path
+                        )
                         if errors['match_confidence'] > best_confidence:
                             best_confidence = errors['match_confidence']
                             best_errors_2d = errors
@@ -956,6 +1058,23 @@ def compare_orthomosaic_to_basemap(
                 
                 if best_errors_2d:
                     errors_2d = best_errors_2d
+            
+            # Create visualization if matches found
+            if errors_2d and errors_2d.get('match_pairs') and len(errors_2d['match_pairs']) > 0:
+                try:
+                    from .visualization import visualize_feature_matches
+                    vis_dir = Path(output_dir) / "visualizations" if output_dir else Path("outputs/visualizations")
+                    vis_dir.mkdir(parents=True, exist_ok=True)
+                    vis_path = vis_dir / f"feature_matches_{Path(ortho_path).stem}_{Path(basemap_path).stem}.png"
+                    visualize_feature_matches(
+                        ortho_band, ref_band,
+                        errors_2d['match_pairs'],
+                        vis_path,
+                        title=f"Feature Matches: {Path(ortho_path).stem} vs {Path(basemap_path).stem}"
+                    )
+                    logger.info(f"Feature match visualization saved to: {vis_path}")
+                except Exception as e:
+                    logger.warning(f"Could not create feature match visualization: {e}")
         
         metrics['bands'][f'band_{band_idx+1}'] = {
             'rmse': float(rmse) if not np.isnan(rmse) else None,
@@ -1196,7 +1315,10 @@ def apply_2d_shift_to_orthomosaic(
     reference_path: Path,
     output_path: Path,
     shift_x: Optional[float] = None,
-    shift_y: Optional[float] = None
+    shift_y: Optional[float] = None,
+    feature_matching_method: str = 'orb',
+    log_file_path: Optional[Path] = None,
+    create_visualization: bool = True
 ) -> Tuple[Path, Dict]:
     """
     Apply a 2D shift to an orthomosaic to align it with a reference basemap.
@@ -1254,42 +1376,59 @@ def apply_2d_shift_to_orthomosaic(
                 ortho_band = ortho_band[::step, ::step]
                 ref_band = ref_band[::step, ::step]
         
-        # Try multiple feature matching methods, use the best one
-        # Add line/edge-based matching for different imagery types
-        methods_to_try = []
-        if CV2_AVAILABLE:
-            methods_to_try.extend(['sift', 'orb', 'lines'])
-        if SKIMAGE_AVAILABLE:
-            methods_to_try.extend(['phase', 'template'])
+        # Get pixel resolution for meter conversion
+        pixel_resolution = abs(ref_transform[0])  # Pixel size in meters
         
+        # Use specified method (default: ORB only)
         best_errors_2d = None
-        best_confidence = 0.0
-        best_method = None
+        best_method = feature_matching_method.lower()
         
-        for method in methods_to_try:
+        if best_method in ['orb', 'sift'] and CV2_AVAILABLE:
             try:
-                logger.debug(f"Trying feature matching method: {method}")
-                errors_2d = compute_feature_matching_2d_error(ortho_band, ref_band, method=method)
+                logger.debug(f"Trying feature matching method: {best_method}")
+                best_errors_2d = compute_feature_matching_2d_error(
+                    ortho_band, ref_band, 
+                    method=best_method,
+                    pixel_resolution=pixel_resolution,
+                    log_file_path=log_file_path
+                )
                 
-                if errors_2d.get('mean_offset_x') is not None and errors_2d.get('mean_offset_y') is not None:
-                    confidence = errors_2d.get('match_confidence', 0.0)
-                    if confidence > best_confidence:
-                        best_confidence = confidence
-                        best_errors_2d = errors_2d
-                        best_method = method
-                        logger.info(f"Method {method} found shift: ({errors_2d['mean_offset_x']:.2f}, {errors_2d['mean_offset_y']:.2f}) px, confidence={confidence:.3f}")
+                if best_errors_2d.get('mean_offset_x') is not None and best_errors_2d.get('mean_offset_y') is not None:
+                    confidence = best_errors_2d.get('match_confidence', 0.0)
+                    logger.info(f"Method {best_method} found shift: ({best_errors_2d['mean_offset_x']:.2f}, {best_errors_2d['mean_offset_y']:.2f}) px, confidence={confidence:.3f}")
+                    if best_errors_2d.get('mean_offset_x_meters'):
+                        logger.info(f"  In meters: ({best_errors_2d['mean_offset_x_meters']:.4f}, {best_errors_2d['mean_offset_y_meters']:.4f}) m")
+                    
+                    # Create visualization if requested
+                    if create_visualization and best_errors_2d.get('match_pairs'):
+                        try:
+                            from .visualization import visualize_feature_matches
+                            vis_dir = output_path.parent / "visualizations"
+                            vis_dir.mkdir(parents=True, exist_ok=True)
+                            vis_path = vis_dir / f"{output_path.stem}_feature_matches.png"
+                            visualize_feature_matches(
+                                ortho_band, ref_band,
+                                best_errors_2d['match_pairs'],
+                                vis_path,
+                                title=f"Feature Matches: {Path(ortho_path).stem} (2D Shift)"
+                            )
+                            logger.info(f"Feature match visualization saved to: {vis_path}")
+                        except Exception as e:
+                            logger.warning(f"Could not create visualization: {e}")
             except Exception as e:
-                logger.debug(f"Feature matching method {method} failed: {e}")
-                continue
+                logger.warning(f"Feature matching method {best_method} failed: {e}")
         
         if best_errors_2d and best_errors_2d.get('mean_offset_x') is not None and best_errors_2d.get('mean_offset_y') is not None:
             # Scale shift back if we resized
             shift_x = best_errors_2d['mean_offset_x'] / scale_factor
             shift_y = best_errors_2d['mean_offset_y'] / scale_factor
-            logger.info(f"Computed shift using {best_method}: X={shift_x:.2f} px, Y={shift_y:.2f} px (confidence={best_confidence:.3f})")
+            logger.info(f"Computed shift using {best_method}: X={shift_x:.2f} px, Y={shift_y:.2f} px")
+            if best_errors_2d.get('mean_offset_x_meters'):
+                shift_x_meters = best_errors_2d['mean_offset_x_meters'] / scale_factor
+                shift_y_meters = best_errors_2d['mean_offset_y_meters'] / scale_factor
+                logger.info(f"  In meters: X={shift_x_meters:.4f} m, Y={shift_y_meters:.4f} m")
         else:
-            logger.warning("Could not compute shift from any feature matching method. Using zero shift.")
-            logger.warning(f"Tried methods: {methods_to_try}")
+            logger.warning("Could not compute shift from feature matching. Using zero shift.")
             logger.warning(f"Image shapes: ortho={ortho_band.shape}, ref={ref_band.shape}")
             shift_x = 0.0
             shift_y = 0.0
@@ -1366,7 +1505,7 @@ def apply_2d_shift_to_orthomosaic(
         ref_transform[5] - shift_y * abs(pixel_size_y)  # Adjust Y origin (note: Y is usually negative)
     )
     
-    # Save shifted orthomosaic
+    # Save shifted orthomosaic with JPEG compression (quality 90)
     with rasterio.open(
         output_path,
         'w',
@@ -1377,15 +1516,21 @@ def apply_2d_shift_to_orthomosaic(
         dtype=ortho_reproj.dtype,
         crs=ref_crs,
         transform=new_transform,
-        compress='lzw'
+        compress='jpeg',
+        jpeg_quality=90,
+        tiled=True,
+        blockxsize=512,
+        blockysize=512
     ) as dst:
         dst.write(shifted_ortho)
     
     shift_info = {
         'shift_x_pixels': float(shift_x),
         'shift_y_pixels': float(shift_y),
-        'shift_x_geographic': float(shift_x * pixel_size_x),
-        'shift_y_geographic': float(shift_y * abs(pixel_size_y)),
+        'shift_x_meters': float(shift_x * pixel_size_x),
+        'shift_y_meters': float(shift_y * abs(pixel_size_y)),
+        'shift_x_geographic': float(shift_x * pixel_size_x),  # Keep for backward compatibility
+        'shift_y_geographic': float(shift_y * abs(pixel_size_y)),  # Keep for backward compatibility
         'output_path': str(output_path)
     }
     
@@ -1613,7 +1758,7 @@ def align_orthomosaic_to_gcps(
         
         aligned_ortho[band_idx] = aligned_band
     
-    # Save aligned orthomosaic (using reference transform and CRS)
+    # Save aligned orthomosaic with JPEG compression (quality 90)
     with rasterio.open(
         output_path,
         'w',
@@ -1624,7 +1769,11 @@ def align_orthomosaic_to_gcps(
         dtype=ortho_reproj.dtype,
         crs=ref_crs,
         transform=ref_transform,
-        compress='lzw'
+        compress='jpeg',
+        jpeg_quality=90,
+        tiled=True,
+        blockxsize=512,
+        blockysize=512
     ) as dst:
         dst.write(aligned_ortho)
     
