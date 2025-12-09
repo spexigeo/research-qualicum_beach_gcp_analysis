@@ -265,11 +265,11 @@ def process_orthomosaic(
     
     logger.info(f"📝 MetaShape verbose output will be saved to: {log_file_path}")
     
-    # Compression settings - use LZW lossless compression to reduce file size without losing visual information
+    # Compression settings - use JPEG compression with quality factor 90
     compression = Metashape.ImageCompression()
-    # Use LZW compression (lossless) instead of None to reduce file size
-    # LZW is lossless and typically reduces file size by 30-50% without any visual quality loss
-    compression.tiff_compression = Metashape.ImageCompression.TiffCompressionLZW
+    # Use JPEG compression with quality 90 for good balance of file size and quality
+    compression.tiff_compression = Metashape.ImageCompression.TiffCompressionJPEG
+    compression.jpeg_quality = 90
     compression.tiff_big = True
     compression.tiff_overviews = True
     compression.tiff_tiled = True
@@ -664,6 +664,26 @@ def process_orthomosaic(
             aligned_count = sum(1 for cam in chunk.cameras if cam.transform)
             logger.info(f"✓ Cameras already aligned ({aligned_count}/{len(chunk.cameras)} cameras)")
         
+        # Set coordinate accuracy bounds on photos and markers
+        # This should be done after alignment but before optimization
+        logger.info("Setting coordinate accuracy bounds on photos and markers")
+        
+        # Set Camera Reference Accuracy to 10m (assumes photos have initial coordinate data from drone GPS)
+        chunk.camera_location_accuracy = (10, 10, 10)  # (x, y, z) in meters
+        logger.info("  Camera location accuracy set to 10m (x, y, z)")
+        
+        # Set Marker (GCP) Accuracy to 0.005m (5mm)
+        chunk.marker_location_accuracy = (0.005, 0.005, 0.005)  # (x, y, z) in meters
+        logger.info("  Marker (GCP) location accuracy set to 0.005m (5mm)")
+        
+        # Optimize Cameras to refine the initial alignment using the set reference accuracies
+        # This should be done after alignment and accuracy settings, but before building depth maps
+        logger.info("Optimizing cameras for improved accuracy")
+        logger.info("  Optimizing: f, cx, cy, k1, k2, k3, p1, p2, and coordinates")
+        chunk.optimizeCameras()
+        safe_save_document()
+        logger.info("  ✓ Camera optimization complete")
+        
         # Build depth maps (if not already built)
         if not status['depth_maps_built']:
             logger.info("Building depth maps...")
@@ -725,7 +745,11 @@ def process_orthomosaic(
             
             while retry_count < max_retries and not model_built:
                 try:
-                    chunk.buildModel()
+                    chunk.buildModel(
+                        source=Metashape.DataSource.DepthMaps,
+                        quality=Metashape.Quality.MediumQuality,
+                        face_count=Metashape.FaceCount.HighFaceCount
+                    )
                     model_built = True
                     safe_save_document()
                     logger.info("  ✓ 3D model built successfully")
