@@ -966,36 +966,36 @@ def compute_feature_matching_2d_error(
                     # Validate shift is reasonable (not > 10% of image size)
                     max_reasonable_shift = max(ortho_norm.shape) * 0.1
                     if abs(mean_offset_x) < max_reasonable_shift and abs(mean_offset_y) < max_reasonable_shift:
-                rmse_2d = float(np.sqrt(mean_offset_x**2 + mean_offset_y**2))
-                mean_offset_x_meters = mean_offset_x * pixel_resolution if pixel_resolution else None
-                mean_offset_y_meters = mean_offset_y * pixel_resolution if pixel_resolution else None
-                rmse_2d_meters = rmse_2d * pixel_resolution if pixel_resolution else None
-                
-                errors_2d.update({
-                    'mean_offset_x': mean_offset_x,
-                    'mean_offset_y': mean_offset_y,
-                    'rmse_2d': rmse_2d,
-                    'num_matches': int(np.sum(edges1 > 0) + np.sum(edges2 > 0)),  # Edge pixel count
-                    'match_confidence': float(1.0 - min(1.0, error)),
-                    'mean_offset_x_meters': mean_offset_x_meters,
-                    'mean_offset_y_meters': mean_offset_y_meters,
-                    'rmse_2d_meters': rmse_2d_meters
-                })
-                logger.info(f"Line/edge matching: offset=({mean_offset_x:.2f}, {mean_offset_y:.2f}) px, error={error:.4f}")
-                if pixel_resolution:
-                    logger.info(f"  In meters: offset=({mean_offset_x_meters:.4f}, {mean_offset_y_meters:.4f}) m")
-                if log_file:
-                    log_file.write(f"Method: LINES/EDGES\n")
-                    log_file.write(f"Offset (pixels): X={mean_offset_x:.4f}, Y={mean_offset_y:.4f}\n")
-                    log_file.write(f"RMSE 2D (pixels): {rmse_2d:.4f}\n")
-                    if pixel_resolution:
-                        log_file.write(f"Offset (meters): X={mean_offset_x_meters:.4f}, Y={mean_offset_y_meters:.4f}\n")
-                        log_file.write(f"RMSE 2D (meters): {rmse_2d_meters:.4f}\n")
-            else:
-                logger.warning(f"Line/edge matching shift ({mean_offset_x:.1f}, {mean_offset_y:.1f}) too large, rejecting")
-                if log_file:
-                    log_file.write(f"WARNING: Shift too large, rejected\n")
-                    log_file.write(f"  Shift: ({mean_offset_x:.2f}, {mean_offset_y:.2f}) pixels\n")
+                        rmse_2d = float(np.sqrt(mean_offset_x**2 + mean_offset_y**2))
+                        mean_offset_x_meters = mean_offset_x * pixel_resolution if pixel_resolution else None
+                        mean_offset_y_meters = mean_offset_y * pixel_resolution if pixel_resolution else None
+                        rmse_2d_meters = rmse_2d * pixel_resolution if pixel_resolution else None
+                        
+                        errors_2d.update({
+                            'mean_offset_x': mean_offset_x,
+                            'mean_offset_y': mean_offset_y,
+                            'rmse_2d': rmse_2d,
+                            'num_matches': int(np.sum(edges1 > 0) + np.sum(edges2 > 0)),  # Edge pixel count
+                            'match_confidence': float(1.0 - min(1.0, error)),
+                            'mean_offset_x_meters': mean_offset_x_meters,
+                            'mean_offset_y_meters': mean_offset_y_meters,
+                            'rmse_2d_meters': rmse_2d_meters
+                        })
+                        logger.info(f"Line/edge matching: offset=({mean_offset_x:.2f}, {mean_offset_y:.2f}) px, error={error:.4f}")
+                        if pixel_resolution:
+                            logger.info(f"  In meters: offset=({mean_offset_x_meters:.4f}, {mean_offset_y_meters:.4f}) m")
+                        if log_file:
+                            log_file.write(f"Method: LINES/EDGES\n")
+                            log_file.write(f"Offset (pixels): X={mean_offset_x:.4f}, Y={mean_offset_y:.4f}\n")
+                            log_file.write(f"RMSE 2D (pixels): {rmse_2d:.4f}\n")
+                            if pixel_resolution:
+                                log_file.write(f"Offset (meters): X={mean_offset_x_meters:.4f}, Y={mean_offset_y_meters:.4f}\n")
+                                log_file.write(f"RMSE 2D (meters): {rmse_2d_meters:.4f}\n")
+                    else:
+                        logger.warning(f"Line/edge matching shift ({mean_offset_x:.1f}, {mean_offset_y:.1f}) too large, rejecting")
+                        if log_file:
+                            log_file.write(f"WARNING: Shift too large, rejected\n")
+                            log_file.write(f"  Shift: ({mean_offset_x:.2f}, {mean_offset_y:.2f}) pixels\n")
                 except Exception as e:
                     logger.debug(f"Phase correlation on edges failed: {e}")
         except Exception as e:
