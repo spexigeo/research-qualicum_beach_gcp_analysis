@@ -707,9 +707,6 @@ def process_orthomosaic(
                             logger.error(f"  ✗ Failed to import markers: {e}")
                             logger.error("  Please use XML or CSV format, or provide GCPs as a list")
                             raise
-                else:
-                    logger.error("  ✗ use_gcps=True but no gcp_file provided!")
-                    raise ValueError("use_gcps=True requires gcp_file parameter")
                 elif gcps:
                     logger.info(f"Using {len(gcps)} GCPs from provided list")
                     logger.info(f"  Setting GCP accuracy to {gcp_accuracy}m for high weight in bundle adjustment")
