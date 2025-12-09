@@ -322,7 +322,7 @@ def process_orthomosaic(
     depth_map_quality: int = DepthMapQuality.MediumQuality,
     tiepoint_limit: int = 10000,
     use_gcps: bool = False,
-    gcp_accuracy: float = 0.05
+    gcp_accuracy: float = 0.005
 ) -> Dict:
     """
     Process orthomosaic using MetaShape.
@@ -340,8 +340,8 @@ def process_orthomosaic(
         tiepoint_limit: Maximum number of tie points
         use_gcps: Whether to use GCPs in processing
         gcp_accuracy: Accuracy of GCPs in meters. Lower values = higher weight in bundle adjustment.
-                     Default 0.05m (5cm) gives high weight. Use 0.01m (1cm) for very high accuracy GCPs,
-                     or 0.10m (10cm) for lower accuracy GCPs.
+                     Default 0.005m (5mm) gives very high weight. Use 0.001m (1mm) for extremely high accuracy GCPs,
+                     or 0.01m (1cm) for lower accuracy GCPs.
         
     Returns:
         Dictionary with processing results and statistics
@@ -641,6 +641,12 @@ def process_orthomosaic(
                                             marker.label = label
                                             marker.reference.location = Metashape.Vector([lon, lat, z])
                                             marker.reference.accuracy = Metashape.Vector([final_accuracy, final_accuracy, final_accuracy])
+                                            # Set scale bar accuracy to 0.001m (1mm) for very high weight
+                                            try:
+                                                marker.reference.scalebar_accuracy = 0.001
+                                            except AttributeError:
+                                                # scalebar_accuracy may not be available in all Metashape versions
+                                                logger.debug(f"  scalebar_accuracy property not available for marker {label}")
                                             marker.reference.enabled = True
                                             markers_added += 1
                                             logger.debug(f"  Added marker {label}: ({lon:.6f}, {lat:.6f}, {z:.2f}), accuracy={final_accuracy}m")
@@ -679,14 +685,19 @@ def process_orthomosaic(
                                     z = float(row.get('Z', row.get('z', 0.0)))
                                     
                                     marker.reference.location = Metashape.Vector((x, y, z))
-                                    marker.reference.enabled = True
-                                    
                                     # Parse accuracy - use provided gcp_accuracy parameter for high weight
                                     # Lower accuracy values = higher weight in bundle adjustment
                                     # If CSV has accuracy, use the minimum of CSV value and gcp_accuracy
                                     csv_accuracy = float(row.get('Accuracy', row.get('accuracy', gcp_accuracy)))
                                     final_accuracy = min(csv_accuracy, gcp_accuracy) if csv_accuracy > 0 else gcp_accuracy
                                     marker.reference.accuracy = Metashape.Vector((final_accuracy, final_accuracy, final_accuracy))
+                                    # Set scale bar accuracy to 0.001m (1mm) for very high weight
+                                    try:
+                                        marker.reference.scalebar_accuracy = 0.001
+                                    except AttributeError:
+                                        # scalebar_accuracy may not be available in all Metashape versions
+                                        logger.debug(f"  scalebar_accuracy property not available for marker {marker.label}")
+                                    marker.reference.enabled = True
                                     logger.debug(f"  Marker {marker.label}: accuracy = {final_accuracy}m (weight = 1/{final_accuracy:.3f})")
                                     
                                     markers_added += 1
@@ -719,7 +730,6 @@ def process_orthomosaic(
                             gcp.get('lat', 0.0),
                             gcp.get('z', 0.0)
                         ))
-                        marker.reference.enabled = True
                         # Use gcp_accuracy parameter for high weight (lower = higher weight)
                         # If GCP dict has accuracy, use the minimum
                         gcp_dict_accuracy = gcp.get('accuracy', gcp_accuracy)
@@ -729,6 +739,13 @@ def process_orthomosaic(
                             final_accuracy,
                             final_accuracy
                         ))
+                        # Set scale bar accuracy to 0.001m (1mm) for very high weight
+                        try:
+                            marker.reference.scalebar_accuracy = 0.001
+                        except AttributeError:
+                            # scalebar_accuracy may not be available in all Metashape versions
+                            logger.debug(f"  scalebar_accuracy property not available for marker {marker.label}")
+                        marker.reference.enabled = True
                         logger.debug(f"  Marker {marker.label}: accuracy = {final_accuracy}m")
                     logger.info(f"  ✓ Added {len(gcps)} markers from provided list")
                     safe_save_document()
@@ -744,6 +761,7 @@ def process_orthomosaic(
             logger.info(f"✓ Total markers in project: {final_marker_count}")
             logger.info(f"✓ Enabled markers (will be used): {enabled_markers}")
             logger.info(f"✓ GCP accuracy setting: {gcp_accuracy}m ({gcp_accuracy*1000:.1f}mm)")
+            logger.info(f"✓ Scale bar accuracy: 0.001m (1mm) for very high weight")
             logger.info("=" * 60)
         elif len(chunk.markers) > 0:
             logger.info(f"Note: {len(chunk.markers)} markers found in project but use_gcps=False")
@@ -776,9 +794,9 @@ def process_orthomosaic(
         chunk.camera_location_accuracy = (10, 10, 10)  # (x, y, z) in meters
         logger.info("  Camera location accuracy set to 10m (x, y, z)")
         
-        # Set Marker (GCP) Accuracy - use gcp_accuracy parameter (default 0.05m = 5cm)
+        # Set Marker (GCP) Accuracy - use gcp_accuracy parameter (default 0.005m = 5mm)
         # Lower values = higher weight in bundle adjustment
-        # 0.05m (5cm) gives very high weight compared to 10m camera accuracy
+        # 0.005m (5mm) gives very high weight compared to 10m camera accuracy
         marker_accuracy = gcp_accuracy if use_gcps else 0.005  # Default 5mm if not using GCPs
         chunk.marker_location_accuracy = (marker_accuracy, marker_accuracy, marker_accuracy)  # (x, y, z) in meters
         if use_gcps:
