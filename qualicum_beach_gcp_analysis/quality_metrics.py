@@ -535,17 +535,28 @@ def compute_feature_matching_2d_error(
     reference_array: np.ndarray,
     method: str = 'sift',
     pixel_resolution: Optional[float] = None,
-    log_file_path: Optional[Path] = None
+    log_file_path: Optional[Path] = None,
+    max_spatial_error_meters: float = 10.0,
+    use_tiles: bool = True,
+    tile_size: int = 2048,
+    use_gpu: bool = True
 ) -> Dict:
     """
     Compute 2D error measures using feature matching between orthomosaic and reference.
     
     This provides spatial error information (X, Y offsets) in addition to pixel-level errors.
+    Optimized for large images with spatial constraints and optional GPU acceleration.
     
     Args:
         ortho_array: Orthomosaic array (grayscale or first band)
         reference_array: Reference basemap array (grayscale or first band)
         method: Feature matching method ('sift', 'orb', 'template', or 'phase')
+        pixel_resolution: Pixel resolution in meters (for spatial constraints and meter conversion)
+        log_file_path: Optional path to save detailed matching log
+        max_spatial_error_meters: Maximum expected spatial error in meters (default: 10m)
+        use_tiles: Whether to process large images in tiles (default: True)
+        tile_size: Size of tiles for processing (default: 2048 pixels)
+        use_gpu: Whether to use GPU acceleration if available (default: True)
         
     Returns:
         Dictionary with 2D error metrics including:
@@ -577,6 +588,17 @@ def compute_feature_matching_2d_error(
     ortho_norm = normalize_to_uint8(ortho_gray)
     ref_norm = normalize_to_uint8(ref_gray)
     
+    # Calculate search window size in pixels based on max spatial error
+    search_window_pixels = None
+    if pixel_resolution and max_spatial_error_meters:
+        search_window_pixels = int(np.ceil(max_spatial_error_meters / pixel_resolution))
+        logger.info(f"Spatial constraint: searching within {search_window_pixels}x{search_window_pixels} pixel window "
+                   f"(max error: {max_spatial_error_meters}m at {pixel_resolution:.4f}m/pixel)")
+    
+    # Check if images are large enough to benefit from tiling
+    max_dimension = max(ortho_norm.shape[0], ortho_norm.shape[1], ref_norm.shape[0], ref_norm.shape[1])
+    should_tile = use_tiles and max_dimension > tile_size * 2
+    
     errors_2d = {
         'method': method,
         'mean_offset_x': None,
@@ -603,31 +625,140 @@ def compute_feature_matching_2d_error(
     if method in ['sift', 'orb'] and CV2_AVAILABLE:
         # Use OpenCV feature matching
         try:
+            # Check for GPU availability
+            gpu_available = False
+            if use_gpu:
+                try:
+                    # Check if OpenCV was built with CUDA support
+                    if hasattr(cv2, 'cuda') and cv2.cuda.getCudaEnabledDeviceCount() > 0:
+                        gpu_available = True
+                        logger.info("GPU acceleration available and enabled")
+                except:
+                    pass
+            
             if method == 'sift':
                 detector = cv2.SIFT_create(nfeatures=5000, contrastThreshold=0.01, edgeThreshold=20)
             else:  # orb
                 detector = cv2.ORB_create(nfeatures=5000, scaleFactor=1.2, nlevels=10)
             
             # Detect keypoints and descriptors
-            kp1, des1 = detector.detectAndCompute(ortho_norm, None)
-            kp2, des2 = detector.detectAndCompute(ref_norm, None)
+            # For large images, process in tiles
+            if should_tile:
+                logger.info(f"Processing large images ({ortho_norm.shape[1]}x{ortho_norm.shape[0]}) in tiles of {tile_size}x{tile_size}")
+                kp1_list, des1_list = [], []
+                kp2_list, des2_list = [], []
+                
+                # Process ortho in tiles
+                for y in range(0, ortho_norm.shape[0], tile_size):
+                    for x in range(0, ortho_norm.shape[1], tile_size):
+                        y_end = min(y + tile_size, ortho_norm.shape[0])
+                        x_end = min(x + tile_size, ortho_norm.shape[1])
+                        tile = ortho_norm[y:y_end, x:x_end]
+                        kp_tile, des_tile = detector.detectAndCompute(tile, None)
+                        if kp_tile and des_tile is not None:
+                            # Adjust keypoint coordinates to global image coordinates
+                            for kp in kp_tile:
+                                kp.pt = (kp.pt[0] + x, kp.pt[1] + y)
+                            kp1_list.extend(kp_tile)
+                            if des1_list:
+                                des1_list = np.vstack([des1_list, des_tile])
+                            else:
+                                des1_list = des_tile
+                
+                # Process reference in tiles
+                for y in range(0, ref_norm.shape[0], tile_size):
+                    for x in range(0, ref_norm.shape[1], tile_size):
+                        y_end = min(y + tile_size, ref_norm.shape[0])
+                        x_end = min(x + tile_size, ref_norm.shape[1])
+                        tile = ref_norm[y:y_end, x:x_end]
+                        kp_tile, des_tile = detector.detectAndCompute(tile, None)
+                        if kp_tile and des_tile is not None:
+                            # Adjust keypoint coordinates to global image coordinates
+                            for kp in kp_tile:
+                                kp.pt = (kp.pt[0] + x, kp.pt[1] + y)
+                            kp2_list.extend(kp_tile)
+                            if des2_list:
+                                des2_list = np.vstack([des2_list, des_tile])
+                            else:
+                                des2_list = des_tile
+                
+                kp1, des1 = kp1_list, des1_list
+                kp2, des2 = kp2_list, des2_list
+                logger.info(f"Detected {len(kp1)} keypoints in ortho, {len(kp2)} in reference (tiled processing)")
+            else:
+                # Process full images
+                kp1, des1 = detector.detectAndCompute(ortho_norm, None)
+                kp2, des2 = detector.detectAndCompute(ref_norm, None)
             
             if des1 is not None and des2 is not None and len(des1) > 0 and len(des2) > 0:
-                # Match features
-                if method == 'sift':
-                    matcher = cv2.BFMatcher()
-                    matches = matcher.knnMatch(des1, des2, k=2)
-                    # Apply Lowe's ratio test with more lenient threshold for different imagery
+                # Match features with spatial constraints
+                if search_window_pixels and search_window_pixels > 0:
+                    # Use spatial constraint: for each ortho keypoint, only search nearby reference keypoints
+                    logger.info(f"Using spatial constraint: {search_window_pixels}x{search_window_pixels} pixel search window")
                     good_matches = []
-                    for match_pair in matches:
-                        if len(match_pair) == 2:
-                            m, n = match_pair
-                            if m.distance < 0.85 * n.distance:  # More lenient for different imagery
-                                good_matches.append(m)
-                else:  # orb
-                    matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
-                    good_matches = matcher.match(des1, des2)
-                    good_matches = sorted(good_matches, key=lambda x: x.distance)[:200]  # More matches
+                    
+                    # Convert keypoints to numpy arrays for efficient distance calculation
+                    kp1_pts = np.array([kp.pt for kp in kp1])
+                    kp2_pts = np.array([kp.pt for kp in kp2])
+                    
+                    if method == 'sift':
+                        matcher = cv2.BFMatcher()
+                        # For each ortho keypoint, find nearby reference keypoints
+                        for i, kp1_pt in enumerate(kp1_pts):
+                            # Find reference keypoints within search window
+                            distances = np.sqrt(np.sum((kp2_pts - kp1_pt)**2, axis=1))
+                            nearby_indices = np.where(distances <= search_window_pixels)[0]
+                            
+                            if len(nearby_indices) > 0:
+                                # Match only against nearby descriptors
+                                nearby_des2 = des2[nearby_indices]
+                                matches = matcher.knnMatch(des1[i:i+1], nearby_des2, k=2)
+                                for match_pair in matches:
+                                    if len(match_pair) == 2:
+                                        m, n = match_pair
+                                        if m.distance < 0.85 * n.distance:
+                                            # Adjust trainIdx to global index
+                                            m.trainIdx = nearby_indices[m.trainIdx]
+                                            good_matches.append(m)
+                    else:  # orb
+                        matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
+                        # For each ortho keypoint, find nearby reference keypoints
+                        for i, kp1_pt in enumerate(kp1_pts):
+                            # Find reference keypoints within search window
+                            distances = np.sqrt(np.sum((kp2_pts - kp1_pt)**2, axis=1))
+                            nearby_indices = np.where(distances <= search_window_pixels)[0]
+                            
+                            if len(nearby_indices) > 0:
+                                # Match only against nearby descriptors
+                                nearby_des2 = des2[nearby_indices]
+                                matches = matcher.knnMatch(des1[i:i+1], nearby_des2, k=2)
+                                for match_pair in matches:
+                                    if len(match_pair) == 2:
+                                        m, n = match_pair
+                                        if m.distance < 0.75 * n.distance:  # Lowe's ratio test
+                                            # Adjust trainIdx to global index
+                                            m.trainIdx = nearby_indices[m.trainIdx]
+                                            good_matches.append(m)
+                    
+                    # Sort by distance and take best matches
+                    good_matches = sorted(good_matches, key=lambda x: x.distance)[:500]
+                    logger.info(f"Spatial-constrained matching found {len(good_matches)} candidate matches")
+                else:
+                    # Standard matching without spatial constraints
+                    if method == 'sift':
+                        matcher = cv2.BFMatcher()
+                        matches = matcher.knnMatch(des1, des2, k=2)
+                        # Apply Lowe's ratio test with more lenient threshold for different imagery
+                        good_matches = []
+                        for match_pair in matches:
+                            if len(match_pair) == 2:
+                                m, n = match_pair
+                                if m.distance < 0.85 * n.distance:  # More lenient for different imagery
+                                    good_matches.append(m)
+                    else:  # orb
+                        matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+                        good_matches = matcher.match(des1, des2)
+                        good_matches = sorted(good_matches, key=lambda x: x.distance)[:200]  # More matches
                 
                 # Filter matches by geometric consistency (RANSAC)
                 if len(good_matches) > 4:
