@@ -781,11 +781,14 @@ def compute_feature_matching_2d_error(
                     try:
                         M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
                         if mask is not None:
-                            inlier_matches = [good_matches[i] for i in range(len(good_matches)) if mask[i]]
+                            # Ensure mask is 1D array and convert to boolean for safe indexing
+                            mask_flat = mask.flatten() if len(mask.shape) > 1 else mask
+                            inlier_matches = [good_matches[i] for i in range(len(good_matches)) if i < len(mask_flat) and bool(mask_flat[i])]
                             if len(inlier_matches) > 4:
                                 good_matches = inlier_matches
                                 logger.debug(f"RANSAC filtered to {len(good_matches)} inlier matches")
-                    except:
+                    except Exception as e:
+                        logger.debug(f"RANSAC failed: {e}, using all matches")
                         pass  # If RANSAC fails, use all matches
                 
                 if len(good_matches) > 4:  # Need at least 4 matches
@@ -1025,16 +1028,51 @@ def downsample_ortho_to_basemap_resolution(
     Returns:
         Path to downsampled orthomosaic
     """
+    import math
+    
+    def get_resolution_meters(src):
+        """Calculate resolution in meters per pixel from a rasterio dataset."""
+        transform = src.transform
+        crs = src.crs
+        
+        # If CRS is WGS84 (EPSG:4326), transform values are in degrees
+        if crs and crs.to_string() == 'EPSG:4326':
+            # Get center latitude for conversion
+            bounds = src.bounds
+            center_lat = (bounds.bottom + bounds.top) / 2.0
+            
+            # Convert degrees to meters
+            # Longitude: varies with latitude
+            meters_per_degree_lon = 111320.0 * math.cos(math.radians(center_lat))
+            # Latitude: constant
+            meters_per_degree_lat = 111320.0
+            
+            # Transform values are in degrees
+            res_x_deg = abs(transform[0])
+            res_y_deg = abs(transform[4])
+            
+            # Convert to meters
+            res_x_m = res_x_deg * meters_per_degree_lon
+            res_y_m = res_y_deg * meters_per_degree_lat
+            resolution = (res_x_m + res_y_m) / 2.0
+        else:
+            # For projected CRS, transform values are already in meters
+            res_x = abs(transform[0])
+            res_y = abs(transform[4])
+            resolution = (res_x + res_y) / 2.0
+        
+        return resolution
+    
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
     with rasterio.open(basemap_path) as basemap:
-        target_resolution = abs(basemap.transform[0])  # Pixel size in meters
+        target_resolution = get_resolution_meters(basemap)  # Pixel size in meters
         target_crs = basemap.crs
         target_bounds = basemap.bounds
     
     with rasterio.open(ortho_path) as ortho:
-        ortho_resolution = abs(ortho.transform[0])  # Pixel size in meters
+        ortho_resolution = get_resolution_meters(ortho)  # Pixel size in meters
         ortho_crs = ortho.crs
         
         # Calculate downsampling factor
