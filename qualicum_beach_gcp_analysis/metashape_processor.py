@@ -745,11 +745,51 @@ def process_orthomosaic(
             
             while retry_count < max_retries and not model_built:
                 try:
-                    chunk.buildModel(
-                        source=Metashape.DataSource.DepthMaps,
-                        quality=Metashape.Quality.MediumQuality,
-                        face_count=Metashape.FaceCount.HighFaceCount
-                    )
+                    # Build model using depth maps as source
+                    # Metashape API varies by version - try different approaches
+                    build_success = False
+                    
+                    # Try different API variations
+                    # Option 1: Try with DepthMapsData (correct enum name)
+                    if not build_success:
+                        try:
+                            if hasattr(Metashape, 'DataSource') and hasattr(Metashape.DataSource, 'DepthMapsData'):
+                                chunk.buildModel(
+                                    source=Metashape.DataSource.DepthMapsData,
+                                    surface=Metashape.SurfaceType.Arbitrary,
+                                    quality=Metashape.Quality.MediumQuality,
+                                    face_count=Metashape.FaceCount.HighFaceCount
+                                )
+                                build_success = True
+                                logger.info("  Using DepthMapsData as source")
+                        except (AttributeError, TypeError) as e:
+                            logger.debug(f"  DepthMapsData approach failed: {e}")
+                    
+                    # Option 2: Try with quality and face_count only (source defaults to depth maps)
+                    if not build_success:
+                        try:
+                            chunk.buildModel(
+                                surface=Metashape.SurfaceType.Arbitrary,
+                                quality=Metashape.Quality.MediumQuality,
+                                face_count=Metashape.FaceCount.HighFaceCount
+                            )
+                            build_success = True
+                            logger.info("  Using default source (depth maps) with quality/face_count")
+                        except (AttributeError, TypeError) as e:
+                            logger.debug(f"  Quality/face_count approach failed: {e}")
+                    
+                    # Option 3: Try minimal parameters (all defaults)
+                    if not build_success:
+                        try:
+                            chunk.buildModel()
+                            build_success = True
+                            logger.info("  Using default parameters")
+                        except Exception as e:
+                            logger.debug(f"  Default parameters failed: {e}")
+                    
+                    if not build_success:
+                        raise RuntimeError("Could not build model with any parameter combination")
+                    
                     model_built = True
                     safe_save_document()
                     logger.info("  ✓ 3D model built successfully")
