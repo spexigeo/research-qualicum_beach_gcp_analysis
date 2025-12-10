@@ -1781,26 +1781,39 @@ def compare_orthomosaic_to_basemap(
                 log_file_path = log_dir / f"feature_matching_{Path(ortho_path).stem}_{Path(basemap_path).stem}.log"
             
             # Use AROSICS by default (best for satellite imagery), fallback to ORB if not available
-            # AROSICS requires file paths, so we use the reprojected ortho and basemap paths
+            # AROSICS requires file paths, so we use the ortho path (which may already be downsampled) and basemap path
             if AROSICS_AVAILABLE and (feature_matching_method.lower() == 'arosics' or feature_matching_method.lower() == 'orb'):
                 errors_2d = None
                 try:
                     logger.info("Attempting AROSICS co-registration (recommended for satellite imagery)...")
-                    # Use reprojected ortho path if available, otherwise use original
-                    ortho_path_for_arosics = reprojected_path if reprojected_path and Path(reprojected_path).exists() else ortho_path
+                    # Use reprojected ortho path if available and exists, otherwise use original ortho_path
+                    # Note: ortho_path may already be downsampled if called from notebook
+                    if reprojected_path and Path(reprojected_path).exists():
+                        ortho_path_for_arosics = Path(reprojected_path)
+                    else:
+                        ortho_path_for_arosics = Path(ortho_path)
+                    
+                    # Ensure both paths exist
+                    if not ortho_path_for_arosics.exists():
+                        raise FileNotFoundError(f"Ortho path for AROSICS does not exist: {ortho_path_for_arosics}")
+                    if not Path(basemap_path).exists():
+                        raise FileNotFoundError(f"Basemap path for AROSICS does not exist: {basemap_path}")
+                    
                     errors_2d = compute_feature_matching_2d_error(
                         ortho_band, ref_band,  # Arrays still needed for fallback
                         method='arosics',
                         pixel_resolution=pixel_resolution,
                         log_file_path=log_file_path,
                         max_spatial_error_meters=10.0,
-                        ortho_path=Path(ortho_path_for_arosics),
+                        ortho_path=ortho_path_for_arosics,
                         reference_path=Path(basemap_path)
                     )
                     if errors_2d and errors_2d.get('num_matches', 0) > 0:
                         logger.info(f"AROSICS co-registration succeeded: reliability={errors_2d.get('match_confidence', 0.0):.3f}")
                 except Exception as e:
                     logger.warning(f"AROSICS co-registration failed: {e}")
+                    import traceback
+                    logger.debug(f"AROSICS error details: {traceback.format_exc()}")
                     errors_2d = None
                 
                 # Fallback to ORB if AROSICS failed
