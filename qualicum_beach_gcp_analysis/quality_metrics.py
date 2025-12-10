@@ -1047,16 +1047,59 @@ def compute_feature_matching_2d_error_arosics(
         
         # Try additional methods to get shift - AROSICS might store it differently
         if not has_shift_info:
-            # Try accessing via calculate_spatial_shifts method result
+            # Method: Call calculate_spatial_shifts() to get the shift
             if hasattr(coreg, 'calculate_spatial_shifts'):
                 try:
+                    logger.debug("Calling calculate_spatial_shifts() method...")
                     result = coreg.calculate_spatial_shifts()
-                    if result and isinstance(result, (list, tuple)) and len(result) >= 2:
-                        shift_x_m = float(result[0])
-                        shift_y_m = float(result[1])
-                        has_shift_info = True
+                    logger.debug(f"calculate_spatial_shifts() returned: {result} (type: {type(result)})")
+                    if result is not None:
+                        # Result might be a tuple, list, or dict
+                        if isinstance(result, (list, tuple)) and len(result) >= 2:
+                            shift_x_m = float(result[0])
+                            shift_y_m = float(result[1])
+                            has_shift_info = True
+                        elif isinstance(result, dict):
+                            # Check for common keys
+                            if 'X' in result or 'x' in result or 'X_shift' in result:
+                                x_key = 'X' if 'X' in result else ('x' if 'x' in result else 'X_shift')
+                                y_key = 'Y' if 'Y' in result else ('y' if 'y' in result else 'Y_shift')
+                                shift_x_m = float(result[x_key]) if x_key in result else None
+                                shift_y_m = float(result[y_key]) if y_key in result else None
+                                if shift_x_m is not None and shift_y_m is not None:
+                                    has_shift_info = True
                 except Exception as e:
                     logger.debug(f"calculate_spatial_shifts() failed: {e}")
+                    import traceback
+                    logger.debug(f"Traceback: {traceback.format_exc()}")
+            
+            # After calling calculate_spatial_shifts, check if shift attributes are now available
+            if not has_shift_info:
+                # Check for shift attributes that might be populated after calculation
+                for attr_name in ['X_shift', 'Y_shift', 'x_shift', 'y_shift', 'shift_x', 'shift_y', 
+                                 'X_shift_px', 'Y_shift_px', 'shift', 'shift_map', 'spatial_shift']:
+                    if hasattr(coreg, attr_name):
+                        try:
+                            val = getattr(coreg, attr_name)
+                            if val is not None:
+                                logger.debug(f"Found {attr_name} = {val} (type: {type(val)})")
+                                # Try to extract shift from this attribute
+                                if isinstance(val, (list, tuple)) and len(val) >= 2:
+                                    if 'x' in attr_name.lower() or attr_name == 'shift' or attr_name == 'shift_map':
+                                        shift_x_m = float(val[0])
+                                        shift_y_m = float(val[1])
+                                        has_shift_info = True
+                                        break
+                                elif isinstance(val, (int, float)):
+                                    if 'x' in attr_name.lower():
+                                        shift_x_m = float(val)
+                                    elif 'y' in attr_name.lower():
+                                        shift_y_m = float(val)
+                                    if shift_x_m is not None and shift_y_m is not None:
+                                        has_shift_info = True
+                                        break
+                        except Exception as e:
+                            logger.debug(f"Error accessing {attr_name}: {e}")
             
             # Try accessing via .X and .Y attributes (common in some AROSICS versions)
             if not has_shift_info:
