@@ -2006,67 +2006,138 @@ def compare_orthomosaic_to_basemap(
     """
     logger.info(f"Comparing orthomosaic {ortho_path.name} to basemap {basemap_path.name}")
     
-    # Reproject orthomosaic to match basemap
-    reprojected_path = None
-    if output_dir:
-        reprojected_path = output_dir / f"reprojected_{ortho_path.stem}.tif"
+    # Check if reprojection is needed (compare CRS and bounds)
+    with rasterio.open(ortho_path) as ortho_src, rasterio.open(basemap_path) as ref_src:
+        ortho_crs = ortho_src.crs
+        ref_crs = ref_src.crs
+        ortho_shape = (ortho_src.height, ortho_src.width)
+        ref_shape = (ref_src.height, ref_src.width)
+        ortho_bounds = ortho_src.bounds
+        ref_bounds = ref_src.bounds
     
-    ortho_reproj, metadata = reproject_to_match(ortho_path, basemap_path, reprojected_path)
+    # Check if CRS matches and arrays are same size
+    crs_match = ortho_crs == ref_crs
+    shape_match = ortho_shape == ref_shape
     
-    # Load reference basemap
-    with rasterio.open(basemap_path) as ref:
-        reference_array = ref.read()
+    if crs_match and shape_match:
+        logger.info("Orthomosaic and basemap already have matching CRS and dimensions, skipping reprojection")
+        # Load arrays directly without reprojection
+        with rasterio.open(ortho_path) as ortho_src:
+            ortho_reproj = ortho_src.read()
+        with rasterio.open(basemap_path) as ref_src:
+            reference_array = ref_src.read()
+        reprojected_path = None
+    else:
+        # Reproject orthomosaic to match basemap
+        reprojected_path = None
+        if output_dir:
+            reprojected_path = output_dir / f"reprojected_{ortho_path.stem}.tif"
+        
+        try:
+            ortho_reproj, metadata = reproject_to_match(ortho_path, basemap_path, reprojected_path)
+        except Exception as e:
+            logger.warning(f"Reprojection failed: {e}")
+            logger.info("Attempting to load arrays directly and resize if needed...")
+            # Fallback: load arrays and check if we can compare them directly
+            with rasterio.open(ortho_path) as ortho_src:
+                ortho_reproj = ortho_src.read()
+            with rasterio.open(basemap_path) as ref_src:
+                reference_array = ref_src.read()
+            
+            # If shapes don't match, we need to handle this differently
+            if ortho_reproj.shape[1:] != reference_array.shape[1:]:
+                logger.warning(f"Shape mismatch: ortho {ortho_reproj.shape[1:]} vs basemap {reference_array.shape[1:]}")
+                logger.warning("Will only perform feature matching, skipping pixel-level comparison")
+                # Set a flag to skip pixel-level metrics
+                ortho_reproj = None
+                reference_array = None
     
     # Ensure same number of bands
-    min_bands = min(ortho_reproj.shape[0], reference_array.shape[0])
-    if ortho_reproj.shape[0] != reference_array.shape[0]:
-        logger.info(f"Band count mismatch: ortho has {ortho_reproj.shape[0]} bands, reference has {reference_array.shape[0]} bands")
-        logger.info(f"Using first {min_bands} band(s) for comparison")
-        # Use matching number of bands
-        ortho_reproj = ortho_reproj[:min_bands]
-        reference_array = reference_array[:min_bands]
+    if ortho_reproj is not None and reference_array is not None:
+        min_bands = min(ortho_reproj.shape[0], reference_array.shape[0])
+        if ortho_reproj.shape[0] != reference_array.shape[0]:
+            logger.info(f"Band count mismatch: ortho has {ortho_reproj.shape[0]} bands, reference has {reference_array.shape[0]} bands")
+            logger.info(f"Using first {min_bands} band(s) for comparison")
+            # Use matching number of bands
+            ortho_reproj = ortho_reproj[:min_bands]
+            reference_array = reference_array[:min_bands]
+        
+        # Ensure same spatial dimensions
+        if ortho_reproj.shape[1:] != reference_array.shape[1:]:
+            logger.warning(f"Spatial dimension mismatch: ortho {ortho_reproj.shape[1:]} vs basemap {reference_array.shape[1:]}")
+            logger.warning("Resizing arrays to match for comparison...")
+            from scipy.ndimage import zoom
+            # Resize reference to match ortho
+            zoom_factors = (1.0, ortho_reproj.shape[1] / reference_array.shape[1], 
+                          ortho_reproj.shape[2] / reference_array.shape[2])
+            reference_array = zoom(reference_array, zoom_factors, order=1)
+            logger.info(f"Resized reference array to: {reference_array.shape}")
+    else:
+        # Arrays couldn't be loaded or matched - will skip pixel-level metrics
+        ortho_reproj = None
+        reference_array = None
     
     # Calculate metrics for each band
     metrics = {
         'ortho_path': str(ortho_path),
         'basemap_path': str(basemap_path),
-        'num_bands': ortho_reproj.shape[0],
+        'num_bands': ortho_reproj.shape[0] if ortho_reproj is not None else 0,
         'bands': {}
     }
     
-    for band_idx in range(ortho_reproj.shape[0]):
-        ortho_band = ortho_reproj[band_idx]
-        ref_band = reference_array[band_idx]
-        
-        # Calculate error metrics
-        rmse = calculate_rmse(ortho_band, ref_band)
-        mae = calculate_mae(ortho_band, ref_band)
-        
-        # Detect seamlines
-        seamline_stats = detect_seamlines(ortho_band)
-        
-        # Calculate similarity
-        similarity = calculate_structural_similarity(ortho_band, ref_band)
-        
-        # Compute 2D error using feature matching (only for first band to avoid redundancy)
-        errors_2d = {}
-        if band_idx == 0:
-            # Get pixel resolution from reference basemap for meter conversion
-            with rasterio.open(basemap_path) as ref:
-                pixel_resolution = abs(ref.transform[0])  # Pixel size in meters
+    # Only calculate pixel-level metrics if arrays are available and same size
+    if ortho_reproj is not None and reference_array is not None:
+        for band_idx in range(ortho_reproj.shape[0]):
+            ortho_band = ortho_reproj[band_idx]
+            ref_band = reference_array[band_idx]
             
-            # Setup log file path for detailed matching results
-            log_file_path = None
-            if output_dir:
-                log_dir = Path(output_dir) / "logs"
-                log_dir.mkdir(parents=True, exist_ok=True)
-                log_file_path = log_dir / f"feature_matching_{Path(ortho_path).stem}_{Path(basemap_path).stem}.log"
+            # Ensure bands are same size
+            if ortho_band.shape != ref_band.shape:
+                logger.warning(f"Band {band_idx} shape mismatch: ortho {ortho_band.shape} vs basemap {ref_band.shape}")
+                # Resize to match - use the smaller one as reference to avoid upsampling artifacts
+                from scipy.ndimage import zoom
+                if ortho_band.size > ref_band.size:
+                    # Resize ref to match ortho
+                    zoom_factors = (ortho_band.shape[0] / ref_band.shape[0], 
+                                  ortho_band.shape[1] / ref_band.shape[1])
+                    ref_band = zoom(ref_band, zoom_factors, order=1)
+                    logger.info(f"Resized ref band to match ortho: {ref_band.shape}")
+                else:
+                    # Resize ortho to match ref
+                    zoom_factors = (ref_band.shape[0] / ortho_band.shape[0], 
+                                  ref_band.shape[1] / ortho_band.shape[1])
+                    ortho_band = zoom(ortho_band, zoom_factors, order=1)
+                    logger.info(f"Resized ortho band to match ref: {ortho_band.shape}")
             
-            # Use AROSICS by default (best for satellite imagery), fallback to ORB if not available
-            # AROSICS requires file paths, so we use the ortho path (which may already be downsampled) and basemap path
-            should_try_arosics = AROSICS_AVAILABLE and (feature_matching_method.lower() == 'arosics' or feature_matching_method.lower() == 'orb' or feature_matching_method.lower() == 'auto')
+            # Calculate error metrics
+            rmse = calculate_rmse(ortho_band, ref_band)
+            mae = calculate_mae(ortho_band, ref_band)
             
-            if should_try_arosics:
+            # Detect seamlines
+            seamline_stats = detect_seamlines(ortho_band)
+            
+            # Calculate similarity
+            similarity = calculate_structural_similarity(ortho_band, ref_band)
+            
+            # Compute 2D error using feature matching (only for first band to avoid redundancy)
+            errors_2d = {}
+            if band_idx == 0:
+                # Get pixel resolution from reference basemap for meter conversion
+                with rasterio.open(basemap_path) as ref:
+                    pixel_resolution = abs(ref.transform[0])  # Pixel size in meters
+                
+                # Setup log file path for detailed matching results
+                log_file_path = None
+                if output_dir:
+                    log_dir = Path(output_dir) / "logs"
+                    log_dir.mkdir(parents=True, exist_ok=True)
+                    log_file_path = log_dir / f"feature_matching_{Path(ortho_path).stem}_{Path(basemap_path).stem}.log"
+                
+                # Use AROSICS by default (best for satellite imagery), fallback to ORB if not available
+                # AROSICS requires file paths, so we use the ortho path (which may already be downsampled) and basemap path
+                should_try_arosics = AROSICS_AVAILABLE and (feature_matching_method.lower() == 'arosics' or feature_matching_method.lower() == 'orb' or feature_matching_method.lower() == 'auto')
+                
+                if should_try_arosics:
                 logger.info(f"AROSICS available: {AROSICS_AVAILABLE}, method: {feature_matching_method}")
                 errors_2d = None
                 try:
@@ -2101,13 +2172,13 @@ def compare_orthomosaic_to_basemap(
                     logger.debug(f"AROSICS error details: {traceback.format_exc()}")
                     errors_2d = None
                 
-                # Fallback to ORB if AROSICS failed
-                if not errors_2d or errors_2d.get('num_matches', 0) < 1:
-                    logger.info("Falling back to ORB feature matching...")
-                    feature_matching_method = 'orb'  # Continue with ORB below
-            
-            # Use specified method (ORB, SIFT, etc.)
-            if feature_matching_method.lower() == 'orb' and CV2_AVAILABLE:
+                    # Fallback to ORB if AROSICS failed
+                    if not errors_2d or errors_2d.get('num_matches', 0) < 1:
+                        logger.info("Falling back to ORB feature matching...")
+                        feature_matching_method = 'orb'  # Continue with ORB below
+                
+                # Use specified method (ORB, SIFT, etc.)
+                if feature_matching_method.lower() == 'orb' and CV2_AVAILABLE:
                 errors_2d = None
                 # First try pyramid matching (handles large misalignments better)
                 try:
@@ -2146,7 +2217,7 @@ def compare_orthomosaic_to_basemap(
                         )
                     except Exception as e:
                         logger.warning(f"Regular ORB feature matching failed: {e}")
-            elif feature_matching_method.lower() == 'sift' and CV2_AVAILABLE:
+                elif feature_matching_method.lower() == 'sift' and CV2_AVAILABLE:
                 errors_2d = None
                 # First try pyramid matching
                 try:
@@ -2185,61 +2256,61 @@ def compare_orthomosaic_to_basemap(
                         )
                     except Exception as e:
                         logger.warning(f"Regular SIFT feature matching failed: {e}")
-            else:
-                # Fallback: try available methods
-                methods_to_try = []
-                if CV2_AVAILABLE:
-                    methods_to_try.extend(['orb', 'sift'])
-                if SKIMAGE_AVAILABLE:
-                    methods_to_try.extend(['phase', 'template'])
+                else:
+                    # Fallback: try available methods
+                    methods_to_try = []
+                    if CV2_AVAILABLE:
+                        methods_to_try.extend(['orb', 'sift'])
+                    if SKIMAGE_AVAILABLE:
+                        methods_to_try.extend(['phase', 'template'])
+                    
+                    best_errors_2d = None
+                    best_confidence = 0.0
+                    
+                    for method in methods_to_try:
+                        try:
+                            errors = compute_feature_matching_2d_error(
+                                ortho_band, ref_band, 
+                                method=method,
+                                pixel_resolution=pixel_resolution,
+                                log_file_path=log_file_path,
+                                max_spatial_error_meters=10.0,  # 10m max error constraint
+                                use_tiles=True,  # Enable tiled processing for large images
+                                tile_size=2048,  # Tile size for processing
+                                use_gpu=True  # Use GPU if available
+                            )
+                            if errors['match_confidence'] > best_confidence:
+                                best_confidence = errors['match_confidence']
+                                best_errors_2d = errors
+                        except Exception as e:
+                            logger.debug(f"Feature matching method {method} failed: {e}")
+                    
+                    if best_errors_2d:
+                        errors_2d = best_errors_2d
                 
-                best_errors_2d = None
-                best_confidence = 0.0
-                
-                for method in methods_to_try:
+                # Create visualization if matches found
+                if errors_2d is not None and errors_2d.get('match_pairs') is not None and len(errors_2d.get('match_pairs', [])) > 0:
                     try:
-                        errors = compute_feature_matching_2d_error(
-                            ortho_band, ref_band, 
-                            method=method,
-                            pixel_resolution=pixel_resolution,
-                            log_file_path=log_file_path,
-                            max_spatial_error_meters=10.0,  # 10m max error constraint
-                            use_tiles=True,  # Enable tiled processing for large images
-                            tile_size=2048,  # Tile size for processing
-                            use_gpu=True  # Use GPU if available
+                        from .visualization import visualize_feature_matches
+                        vis_dir = Path(output_dir) / "visualizations" if output_dir else Path("outputs/visualizations")
+                        vis_dir.mkdir(parents=True, exist_ok=True)
+                        vis_path = vis_dir / f"feature_matches_{Path(ortho_path).stem}_{Path(basemap_path).stem}.png"
+                        # Get keypoints if available (stored during matching)
+                        ortho_kp = errors_2d.get('ortho_keypoints', None)
+                        basemap_kp = errors_2d.get('basemap_keypoints', None)
+                        visualize_feature_matches(
+                            ortho_band, ref_band,
+                            errors_2d['match_pairs'],
+                            vis_path,
+                            title=f"Feature Matches: {Path(ortho_path).stem} vs {Path(basemap_path).stem}",
+                            ortho_keypoints=ortho_kp,
+                            basemap_keypoints=basemap_kp
                         )
-                        if errors['match_confidence'] > best_confidence:
-                            best_confidence = errors['match_confidence']
-                            best_errors_2d = errors
+                        logger.info(f"Feature match visualization saved to: {vis_path}")
                     except Exception as e:
-                        logger.debug(f"Feature matching method {method} failed: {e}")
-                
-                if best_errors_2d:
-                    errors_2d = best_errors_2d
+                        logger.warning(f"Could not create feature match visualization: {e}")
             
-            # Create visualization if matches found
-            if errors_2d is not None and errors_2d.get('match_pairs') is not None and len(errors_2d.get('match_pairs', [])) > 0:
-                try:
-                    from .visualization import visualize_feature_matches
-                    vis_dir = Path(output_dir) / "visualizations" if output_dir else Path("outputs/visualizations")
-                    vis_dir.mkdir(parents=True, exist_ok=True)
-                    vis_path = vis_dir / f"feature_matches_{Path(ortho_path).stem}_{Path(basemap_path).stem}.png"
-                    # Get keypoints if available (stored during matching)
-                    ortho_kp = errors_2d.get('ortho_keypoints', None)
-                    basemap_kp = errors_2d.get('basemap_keypoints', None)
-                    visualize_feature_matches(
-                        ortho_band, ref_band,
-                        errors_2d['match_pairs'],
-                        vis_path,
-                        title=f"Feature Matches: {Path(ortho_path).stem} vs {Path(basemap_path).stem}",
-                        ortho_keypoints=ortho_kp,
-                        basemap_keypoints=basemap_kp
-                    )
-                    logger.info(f"Feature match visualization saved to: {vis_path}")
-                except Exception as e:
-                    logger.warning(f"Could not create feature match visualization: {e}")
-        
-        metrics['bands'][f'band_{band_idx+1}'] = {
+            metrics['bands'][f'band_{band_idx+1}'] = {
             'rmse': float(rmse) if not np.isnan(rmse) else None,
             'mae': float(mae) if not np.isnan(mae) else None,
             'similarity': float(similarity),
