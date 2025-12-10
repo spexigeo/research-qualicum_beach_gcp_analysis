@@ -536,6 +536,36 @@ def process_orthomosaic(
             logger.info("=" * 60)
             logger.info("GROUND CONTROL POINTS (GCPs) CONFIGURATION")
             logger.info("=" * 60)
+            
+            # CRITICAL: Set chunk coordinate system to WGS84 (EPSG:4326) before adding markers
+            # Metashape requires markers to be in WGS84 (longitude, latitude, elevation)
+            logger.info("Setting chunk coordinate system to WGS84 (EPSG:4326)...")
+            try:
+                # Metashape uses coordinate system objects
+                # WGS84 is the default geographic coordinate system
+                chunk.crs = Metashape.CoordinateSystem("EPSG::4326")
+                logger.info("  ✓ Chunk CRS set to WGS84 (EPSG:4326)")
+            except (AttributeError, TypeError, RuntimeError) as e:
+                # Try alternative method
+                try:
+                    # Some Metashape versions use different API
+                    if hasattr(Metashape, 'CoordinateSystem'):
+                        chunk.crs = Metashape.CoordinateSystem("EPSG::4326")
+                        logger.info("  ✓ Chunk CRS set to WGS84 (EPSG:4326) [alternative method]")
+                    else:
+                        logger.warning(f"  ⚠️  Could not set CRS: {e}")
+                        logger.warning("  ⚠️  Markers may not be detected if CRS is incorrect")
+                except Exception as e2:
+                    logger.warning(f"  ⚠️  Could not set CRS: {e2}")
+                    logger.warning("  ⚠️  Continuing anyway - ensure GCPs are in WGS84 (lon, lat, z) format")
+            
+            # Log current CRS for verification
+            try:
+                current_crs = str(chunk.crs) if hasattr(chunk, 'crs') and chunk.crs else "Not set"
+                logger.info(f"  Current chunk CRS: {current_crs}")
+            except:
+                logger.info("  Current chunk CRS: Unable to read")
+            
             if existing_markers == 0:
                 if gcp_file and gcp_file.exists():
                     logger.info(f"Loading GCPs from file: {gcp_file}")
@@ -595,8 +625,20 @@ def process_orthomosaic(
                                                 final_accuracy = gcp_accuracy
                                             
                                             # Add marker
+                                            # CRITICAL: Metashape expects WGS84 format: (longitude, latitude, elevation)
+                                            # XML format typically has x=lon, y=lat
                                             marker = chunk.addMarker()
                                             marker.label = label
+                                            
+                                            # Log coordinates being added
+                                            logger.info(f"  Adding marker {label}: lon={lon:.6f}, lat={lat:.6f}, z={z:.2f}")
+                                            
+                                            # Verify coordinate ranges
+                                            if not (-180 <= lon <= 180):
+                                                logger.warning(f"  ⚠️  Marker {label}: longitude {lon:.6f} outside valid range [-180, 180]")
+                                            if not (-90 <= lat <= 90):
+                                                logger.warning(f"  ⚠️  Marker {label}: latitude {lat:.6f} outside valid range [-90, 90]")
+                                            
                                             marker.reference.location = Metashape.Vector([lon, lat, z])
                                             marker.reference.accuracy = Metashape.Vector([final_accuracy, final_accuracy, final_accuracy])
                                             # Set scale bar accuracy to 0.001m (1mm) for very high weight
@@ -638,10 +680,35 @@ def process_orthomosaic(
                                     marker.label = row.get('Label', f"GCP_{markers_added+1}")
                                     
                                     # Parse coordinates
+                                    # CRITICAL: Metashape expects WGS84 format: (longitude, latitude, elevation)
+                                    # CSV might have X=lon, Y=lat OR X=easting, Y=northing (UTM)
+                                    # Check coordinate ranges to detect format
                                     x = float(row.get('X', row.get('x', 0.0)))
                                     y = float(row.get('Y', row.get('y', 0.0)))
                                     z = float(row.get('Z', row.get('z', 0.0)))
                                     
+                                    # Detect coordinate system by value ranges
+                                    # WGS84: lon typically -180 to 180, lat -90 to 90
+                                    # UTM: easting typically 100k-900k, northing 5M-10M (varies by zone)
+                                    is_likely_utm = (abs(x) > 1000 and abs(x) < 1000000) or (abs(y) > 1000000)
+                                    is_likely_wgs84 = (-180 <= x <= 180) and (-90 <= y <= 90)
+                                    
+                                    if is_likely_utm and not is_likely_wgs84:
+                                        logger.warning(f"  ⚠️  Marker {marker.label}: Coordinates look like UTM (X={x:.2f}, Y={y:.2f})")
+                                        logger.warning(f"  ⚠️  Metashape requires WGS84 (lon, lat). Converting may be needed.")
+                                        logger.warning(f"  ⚠️  Attempting to use as-is, but detection may fail if CRS is wrong.")
+                                        # Try to detect if X/Y are swapped (common issue)
+                                        # If X > 1000000, it's likely northing (should be Y)
+                                        if abs(x) > abs(y) and abs(x) > 100000:
+                                            logger.warning(f"  ⚠️  Possible coordinate swap detected. X={x:.2f} might be northing.")
+                                    
+                                    # Log coordinates being added
+                                    logger.info(f"  Adding marker {marker.label}: X={x:.6f}, Y={y:.6f}, Z={z:.2f}")
+                                    logger.info(f"    (Expected format: longitude, latitude, elevation in WGS84)")
+                                    
+                                    # Metashape expects: (longitude, latitude, elevation)
+                                    # If CSV has X=lon, Y=lat, use as-is
+                                    # If CSV has X=easting, Y=northing, we'd need to convert (not done here)
                                     marker.reference.location = Metashape.Vector((x, y, z))
                                     # Parse accuracy - use provided gcp_accuracy parameter for high weight
                                     # Lower accuracy values = higher weight in bundle adjustment
@@ -695,11 +762,22 @@ def process_orthomosaic(
                     for gcp in gcps:
                         marker = chunk.addMarker()
                         marker.label = gcp.get('id', f"GCP_{gcps.index(gcp)+1}")
-                        marker.reference.location = Metashape.Vector((
-                            gcp.get('lon', 0.0),
-                            gcp.get('lat', 0.0),
-                            gcp.get('z', 0.0)
-                        ))
+                        
+                        # CRITICAL: Metashape expects WGS84 format: (longitude, latitude, elevation)
+                        lon = gcp.get('lon', gcp.get('longitude', 0.0))
+                        lat = gcp.get('lat', gcp.get('latitude', 0.0))
+                        z = gcp.get('z', gcp.get('elevation', gcp.get('alt', 0.0)))
+                        
+                        # Log coordinates being added
+                        logger.info(f"  Adding marker {marker.label}: lon={lon:.6f}, lat={lat:.6f}, z={z:.2f}")
+                        
+                        # Verify coordinate ranges
+                        if not (-180 <= lon <= 180):
+                            logger.warning(f"  ⚠️  Marker {marker.label}: longitude {lon:.6f} outside valid range [-180, 180]")
+                        if not (-90 <= lat <= 90):
+                            logger.warning(f"  ⚠️  Marker {marker.label}: latitude {lat:.6f} outside valid range [-90, 90]")
+                        
+                        marker.reference.location = Metashape.Vector((lon, lat, z))
                         # Use gcp_accuracy parameter for high weight (lower = higher weight)
                         # If GCP dict has accuracy, use the minimum
                         gcp_dict_accuracy = gcp.get('accuracy', gcp_accuracy)
