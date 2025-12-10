@@ -1019,6 +1019,24 @@ def compute_feature_matching_2d_error_arosics(
             shift_y_px = float(coreg.Y_shift_px) if coreg.Y_shift_px is not None else None
             has_shift_info = shift_x_px is not None and shift_y_px is not None
         
+        # Debug: Log all available attributes if we don't have shift info yet
+        if not has_shift_info:
+            try:
+                attrs = [attr for attr in dir(coreg) if not attr.startswith('_')]
+                logger.debug(f"AROSICS object attributes: {attrs[:20]}...")  # First 20 attributes
+                # Try to find shift-related attributes
+                shift_attrs = [attr for attr in attrs if 'shift' in attr.lower()]
+                if shift_attrs:
+                    logger.debug(f"Shift-related attributes found: {shift_attrs}")
+                    for attr in shift_attrs:
+                        try:
+                            val = getattr(coreg, attr)
+                            logger.debug(f"  {attr} = {val} (type: {type(val)})")
+                        except Exception as e:
+                            logger.debug(f"  {attr} access failed: {e}")
+            except Exception as e:
+                logger.debug(f"Error inspecting AROSICS attributes: {e}")
+        
         # Get reliability/confidence if available
         if hasattr(coreg, 'reliability'):
             reliability = float(coreg.reliability) if coreg.reliability is not None else 0.0
@@ -1026,6 +1044,34 @@ def compute_feature_matching_2d_error_arosics(
             reliability = 1.0  # If success is True, assume high reliability
         elif has_shift_info:
             reliability = 0.8  # If we have shift info, assume moderate reliability
+        
+        # Try additional methods to get shift - AROSICS might store it differently
+        if not has_shift_info:
+            # Try accessing via calculate_spatial_shifts method result
+            if hasattr(coreg, 'calculate_spatial_shifts'):
+                try:
+                    result = coreg.calculate_spatial_shifts()
+                    if result and isinstance(result, (list, tuple)) and len(result) >= 2:
+                        shift_x_m = float(result[0])
+                        shift_y_m = float(result[1])
+                        has_shift_info = True
+                except Exception as e:
+                    logger.debug(f"calculate_spatial_shifts() failed: {e}")
+            
+            # Try accessing via .X and .Y attributes (common in some AROSICS versions)
+            if not has_shift_info:
+                for attr_pattern in ['X', 'Y', 'x_shift', 'y_shift', 'dx', 'dy']:
+                    x_attr = f'{attr_pattern}_shift' if not attr_pattern.startswith('x') else attr_pattern
+                    y_attr = f'{attr_pattern.replace("X", "Y").replace("x", "y")}_shift' if 'shift' not in attr_pattern else attr_pattern.replace('x', 'y')
+                    if hasattr(coreg, x_attr) and hasattr(coreg, y_attr):
+                        try:
+                            shift_x_m = float(getattr(coreg, x_attr))
+                            shift_y_m = float(getattr(coreg, y_attr))
+                            if shift_x_m is not None and shift_y_m is not None:
+                                has_shift_info = True
+                                break
+                        except (ValueError, TypeError):
+                            pass
         
         # Process shift information if we have it
         if has_shift_info:
