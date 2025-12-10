@@ -1029,19 +1029,6 @@ def compute_feature_matching_2d_error_arosics(
         
         # Process shift information if we have it
         if has_shift_info:
-            # Get reliability/confidence
-            reliability = getattr(coreg, 'reliability', 0.0)
-            
-            # Get shift in map coordinates (meters)
-            if hasattr(coreg, 'shift_map') and coreg.shift_map is not None:
-                shift_x_m = float(coreg.shift_map[0]) if len(coreg.shift_map) > 0 else None
-                shift_y_m = float(coreg.shift_map[1]) if len(coreg.shift_map) > 1 else None
-            
-            # Get shift in pixels
-            if hasattr(coreg, 'shift') and coreg.shift is not None:
-                shift_x_px = float(coreg.shift[0]) if len(coreg.shift) > 0 else None
-                shift_y_px = float(coreg.shift[1]) if len(coreg.shift) > 1 else None
-            
             # If we have meters but not pixels, convert using pixel resolution
             if shift_x_m is not None and shift_y_m is not None and pixel_resolution:
                 shift_x_px = shift_x_m / pixel_resolution
