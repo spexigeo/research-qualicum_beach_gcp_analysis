@@ -1542,6 +1542,623 @@ def compare_orthomosaic_to_basemap_memory_efficient(
     return metrics
 
 
+def remove_outliers_ransac(
+    src_points: np.ndarray, 
+    dst_points: np.ndarray, 
+    threshold: float = 50.0, 
+    min_samples: int = 3
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Remove outliers using RANSAC with proper model fitting.
+    
+    Args:
+        src_points: Source points (N, 2)
+        dst_points: Destination points (N, 2)
+        threshold: Outlier threshold in pixels
+        min_samples: Minimum number of samples to keep
+        
+    Returns:
+        Tuple of (inlier_src, inlier_dst, inlier_mask)
+    """
+    if len(src_points) < min_samples:
+        mask = np.ones(len(src_points), dtype=bool)
+        return src_points, dst_points, mask
+    
+    # Convert to numpy arrays if needed
+    src_points = np.array(src_points, dtype=np.float32)
+    dst_points = np.array(dst_points, dtype=np.float32)
+    
+    # Compute median shift as initial estimate
+    shifts = dst_points - src_points
+    median_shift = np.median(shifts, axis=0)
+    
+    # Compute distances from median shift
+    expected_dst = src_points + median_shift
+    distances = np.sqrt(np.sum((dst_points - expected_dst)**2, axis=1))
+    
+    # Use IQR method for outlier detection
+    q1 = np.percentile(distances, 25)
+    q3 = np.percentile(distances, 75)
+    iqr = q3 - q1
+    outlier_threshold = q3 + 2.5 * iqr  # More aggressive
+    
+    # Also use absolute threshold (in pixels)
+    absolute_threshold = max(threshold, 100.0)  # At least 100 pixels
+    
+    # Mark outliers
+    inlier_mask = (distances <= outlier_threshold) & (distances <= absolute_threshold)
+    
+    # Ensure we have at least min_samples inliers
+    if np.sum(inlier_mask) < min_samples:
+        # Keep the min_samples points closest to the median
+        sorted_indices = np.argsort(distances)
+        inlier_mask = np.zeros(len(src_points), dtype=bool)
+        inlier_mask[sorted_indices[:min_samples]] = True
+    
+    # Ensure inlier_mask is a proper boolean array
+    inlier_mask = np.asarray(inlier_mask, dtype=bool)
+    
+    # Return filtered points
+    return src_points[inlier_mask], dst_points[inlier_mask], inlier_mask
+
+
+def compute_transformation_from_matches(
+    match_pairs: List[Tuple[Tuple[float, float], Tuple[float, float]]],
+    transformation_type: str = 'shift'
+) -> Dict:
+    """
+    Compute transformation from feature match pairs.
+    
+    Args:
+        match_pairs: List of (src_point, dst_point) tuples
+        transformation_type: 'shift', 'affine', 'homography', or 'deformable'
+        
+    Returns:
+        Dictionary with transformation parameters and RMSE
+    """
+    if len(match_pairs) < 3:
+        return {'type': 'insufficient_points', 'error': f'Need at least 3 matches, got {len(match_pairs)}'}
+    
+    # Extract source and destination points
+    src_points = np.array([pair[0] for pair in match_pairs], dtype=np.float32)
+    dst_points = np.array([pair[1] for pair in match_pairs], dtype=np.float32)
+    
+    # Remove outliers using RANSAC
+    src_points, dst_points, inlier_mask = remove_outliers_ransac(src_points, dst_points, threshold=100.0, min_samples=3)
+    
+    if len(src_points) < 3:
+        return {'type': 'insufficient_points', 'error': 'Need at least 3 matches after outlier removal'}
+    
+    # Compute transformation based on type
+    if transformation_type == 'shift':
+        # Compute 2D shift (mean offset)
+        offsets = dst_points - src_points
+        shift_x = float(np.mean(offsets[:, 0]))
+        shift_y = float(np.mean(offsets[:, 1]))
+        
+        # Compute RMSE
+        errors = offsets - np.array([shift_x, shift_y])
+        rmse = float(np.sqrt(np.mean(np.sum(errors**2, axis=1))))
+        
+        return {
+            'type': 'shift',
+            'shift_x': shift_x,
+            'shift_y': shift_y,
+            'rmse': rmse,
+            'num_points': len(src_points)
+        }
+    
+    elif transformation_type == 'affine':
+        # Compute affine transformation using least squares
+        if len(src_points) < 3:
+            return {'type': 'insufficient_points', 'error': 'Need at least 3 points for affine'}
+        
+        # Build system: A * params = b
+        A = np.zeros((2 * len(src_points), 6))
+        b = np.zeros(2 * len(src_points))
+        
+        for k in range(len(src_points)):
+            x, y = src_points[k]
+            xp, yp = dst_points[k]
+            A[2*k, :] = [x, y, 1, 0, 0, 0]
+            b[2*k] = xp
+            A[2*k+1, :] = [0, 0, 0, x, y, 1]
+        
+        # Solve using least squares
+        try:
+            params, residuals, rank, s = np.linalg.lstsq(A, b, rcond=None)
+            transform_matrix = params.reshape(2, 3)
+            
+            # Apply to all points to compute error
+            ones = np.ones((len(src_points), 1))
+            src_homogeneous = np.hstack([src_points, ones])
+            transformed = (transform_matrix @ src_homogeneous.T).T
+            
+            errors = dst_points - transformed
+            rmse = float(np.sqrt(np.mean(np.sum(errors**2, axis=1))))
+            
+            return {
+                'type': 'affine',
+                'matrix': transform_matrix.tolist(),
+                'rmse': rmse,
+                'num_points': len(src_points)
+            }
+        except Exception as e:
+            return {'type': 'affine_error', 'error': str(e)}
+    
+    elif transformation_type == 'homography':
+        # Compute homography transformation (requires at least 4 points)
+        if len(src_points) < 4:
+            return {'type': 'insufficient_points', 'error': 'Need at least 4 points for homography'}
+        
+        if not CV2_AVAILABLE:
+            return {'type': 'homography_error', 'error': 'OpenCV not available'}
+        
+        try:
+            homography_matrix, inlier_mask = cv2.findHomography(
+                src_points.reshape(-1, 1, 2),
+                dst_points.reshape(-1, 1, 2),
+                method=cv2.RANSAC,
+                ransacReprojThreshold=5.0,
+                maxIters=2000,
+                confidence=0.99
+            )
+            
+            if homography_matrix is not None:
+                # Apply to all points to compute error
+                ones = np.ones((len(src_points), 1))
+                src_homogeneous = np.hstack([src_points, ones])
+                transformed = (homography_matrix @ src_homogeneous.T).T
+                transformed = transformed[:, :2] / transformed[:, 2:3]
+                
+                errors = dst_points - transformed
+                rmse = float(np.sqrt(np.mean(np.sum(errors**2, axis=1))))
+                
+                return {
+                    'type': 'homography',
+                    'matrix': homography_matrix.tolist(),
+                    'rmse': rmse,
+                    'num_points': len(src_points),
+                    'num_inliers': int(np.sum(inlier_mask)) if inlier_mask is not None else len(src_points)
+                }
+            else:
+                return {'type': 'homography_failed', 'error': 'Homography computation failed'}
+        except Exception as e:
+            return {'type': 'homography_error', 'error': str(e)}
+    
+    elif transformation_type == 'deformable':
+        # Compute deformable transformation using thin-plate spline
+        if len(src_points) < 3:
+            return {'type': 'insufficient_points', 'error': 'Need at least 3 points for deformable transformation'}
+        
+        try:
+            from scipy.interpolate import RBFInterpolator
+            
+            # Fit RBF interpolator (thin-plate spline)
+            rbf = RBFInterpolator(src_points, dst_points, kernel='thin_plate_spline', smoothing=0.0)
+            
+            # Evaluate on all points to compute error
+            transformed = rbf(src_points)
+            errors = dst_points - transformed
+            rmse = float(np.sqrt(np.mean(np.sum(errors**2, axis=1))))
+            
+            return {
+                'type': 'deformable',
+                'rmse': rmse,
+                'num_points': len(src_points),
+                'src_points': src_points.tolist(),
+                'dst_points': dst_points.tolist()
+            }
+        except ImportError:
+            return {'type': 'deformable_error', 'error': 'scipy.interpolate.RBFInterpolator not available'}
+        except Exception as e:
+            return {'type': 'deformable_error', 'error': str(e)}
+    
+    else:
+        return {'type': 'unknown', 'error': f'Unknown transformation type: {transformation_type}'}
+
+
+def compute_best_transformation(
+    match_pairs: List[Tuple[Tuple[float, float], Tuple[float, float]]]
+) -> Dict:
+    """
+    Compute multiple transformation types and choose the best based on RMSE.
+    
+    Args:
+        match_pairs: List of (src_point, dst_point) tuples from feature matching
+        
+    Returns:
+        Dictionary with 'primary' (best) and 'secondary' (second best) transformations
+    """
+    if len(match_pairs) < 3:
+        return {'error': f'Insufficient matches: {len(match_pairs)}'}
+    
+    transformation_results = {}
+    
+    # Try all transformation types
+    for trans_type in ['shift', 'affine', 'homography', 'deformable']:
+        try:
+            result = compute_transformation_from_matches(match_pairs, trans_type)
+            if 'error' not in result:
+                transformation_results[trans_type] = result
+                logger.debug(f"{trans_type}: RMSE = {result.get('rmse', 'N/A'):.2f} pixels")
+            else:
+                logger.debug(f"{trans_type}: {result.get('error', 'Unknown error')}")
+        except Exception as e:
+            logger.debug(f"{trans_type} failed: {e}")
+    
+    if len(transformation_results) == 0:
+        return {'error': 'No valid transformations'}
+    
+    # Sort by RMSE (lower is better)
+    sorted_transforms = sorted(
+        transformation_results.items(),
+        key=lambda x: x[1].get('rmse', float('inf'))
+    )
+    
+    # Primary (best) transformation
+    primary_type, primary_trans = sorted_transforms[0]
+    
+    # Secondary (second best) transformation if available
+    secondary_trans = None
+    if len(sorted_transforms) > 1:
+        secondary_type, secondary_trans = sorted_transforms[1]
+    
+    return {
+        'primary': primary_trans,
+        'secondary': secondary_trans,
+        'all_results': transformation_results
+    }
+
+
+def apply_transformation_to_orthomosaic(
+    ortho_path: Path,
+    transformation: Dict,
+    reference_path: Path,
+    output_path: Path
+) -> Path:
+    """
+    Apply a transformation (shift, affine, homography, or deformable) to an orthomosaic.
+    
+    Args:
+        ortho_path: Path to orthomosaic GeoTIFF
+        transformation: Transformation dictionary (from compute_transformation_from_matches)
+        reference_path: Path to reference basemap (for CRS and bounds)
+        output_path: Path to save transformed orthomosaic
+        
+    Returns:
+        Path to saved transformed orthomosaic
+    """
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Reproject orthomosaic to match reference first
+    logger.info("Reprojecting orthomosaic to match reference...")
+    ortho_reproj, metadata = reproject_to_match(ortho_path, reference_path)
+    
+    with rasterio.open(reference_path) as ref:
+        ref_transform = ref.transform
+        ref_crs = ref.crs
+        ref_width = ref.width
+        ref_height = ref.height
+    
+    try:
+        from scipy import ndimage
+        use_scipy = True
+    except ImportError:
+        use_scipy = False
+        logger.warning("scipy not available. Some transformations may not work correctly.")
+    
+    transformed_ortho = np.zeros_like(ortho_reproj)
+    trans_type = transformation.get('type', 'shift')
+    
+    if trans_type == 'shift':
+        shift_x = transformation['shift_x']
+        shift_y = transformation['shift_y']
+        
+        for band_idx in range(ortho_reproj.shape[0]):
+            band = ortho_reproj[band_idx]
+            if use_scipy:
+                transformed_band = ndimage.shift(band, (shift_y, shift_x), order=1, mode='constant', cval=0.0)
+            else:
+                # Integer shift fallback
+                shift_x_int = int(round(shift_x))
+                shift_y_int = int(round(shift_y))
+                transformed_band = np.zeros_like(band)
+                if shift_x_int != 0 or shift_y_int != 0:
+                    src_y = slice(max(0, -shift_y_int), min(band.shape[0], band.shape[0] - shift_y_int))
+                    src_x = slice(max(0, -shift_x_int), min(band.shape[1], band.shape[1] - shift_x_int))
+                    dst_y = slice(max(0, shift_y_int), min(band.shape[0], band.shape[0] + shift_y_int))
+                    dst_x = slice(max(0, shift_x_int), min(band.shape[1], band.shape[1] + shift_x_int))
+                    transformed_band[dst_y, dst_x] = band[src_y, src_x]
+                else:
+                    transformed_band = band.copy()
+            transformed_ortho[band_idx] = transformed_band
+        
+        # Update transform
+        pixel_size_x = abs(ref_transform[0])
+        pixel_size_y = abs(ref_transform[4])
+        new_transform = Affine(
+            ref_transform[0], ref_transform[1],
+            ref_transform[2] - shift_x * pixel_size_x,
+            ref_transform[3], ref_transform[4],
+            ref_transform[5] - shift_y * abs(pixel_size_y)
+        )
+    
+    elif trans_type == 'affine':
+        if not use_scipy:
+            raise ValueError("scipy required for affine transformation")
+        
+        transform_matrix = np.array(transformation['matrix'], dtype=np.float32)
+        matrix_2x2 = transform_matrix[:2, :2]
+        offset = transform_matrix[:2, 2]
+        inv_matrix = np.linalg.inv(matrix_2x2)
+        
+        # Create coordinate grids
+        y_coords, x_coords = np.mgrid[0:ref_height, 0:ref_width].astype(np.float32)
+        
+        # Apply inverse affine
+        coords = np.stack([x_coords.ravel() - offset[0], y_coords.ravel() - offset[1]], axis=1)
+        src_coords = (inv_matrix @ coords.T).T
+        src_x = src_coords[:, 0].reshape(ref_height, ref_width)
+        src_y = src_coords[:, 1].reshape(ref_height, ref_width)
+        
+        # Clamp to source bounds
+        src_x = np.clip(src_x, 0, ortho_reproj.shape[2] - 1)
+        src_y = np.clip(src_y, 0, ortho_reproj.shape[1] - 1)
+        
+        for band_idx in range(ortho_reproj.shape[0]):
+            transformed_ortho[band_idx] = ndimage.map_coordinates(
+                ortho_reproj[band_idx],
+                [src_y, src_x],
+                order=1,
+                mode='constant',
+                cval=0
+            )
+        
+        new_transform = ref_transform  # Affine doesn't change transform origin
+    
+    elif trans_type == 'homography':
+        if not use_scipy or not CV2_AVAILABLE:
+            raise ValueError("scipy and OpenCV required for homography transformation")
+        
+        homography_matrix = np.array(transformation['matrix'], dtype=np.float32)
+        inv_homography = np.linalg.inv(homography_matrix)
+        
+        # Create coordinate grids
+        y_coords, x_coords = np.mgrid[0:ref_height, 0:ref_width].astype(np.float32)
+        
+        # Apply inverse homography
+        tgt_coords_hom = np.stack([x_coords.ravel(), y_coords.ravel(), np.ones(x_coords.size)], axis=0)
+        src_coords_hom = inv_homography @ tgt_coords_hom
+        src_coords_hom = src_coords_hom / src_coords_hom[2, :]  # Normalize
+        
+        src_x = src_coords_hom[0, :].reshape(ref_height, ref_width)
+        src_y = src_coords_hom[1, :].reshape(ref_height, ref_width)
+        
+        # Clamp to source bounds
+        src_x = np.clip(src_x, 0, ortho_reproj.shape[2] - 1)
+        src_y = np.clip(src_y, 0, ortho_reproj.shape[1] - 1)
+        
+        for band_idx in range(ortho_reproj.shape[0]):
+            transformed_ortho[band_idx] = ndimage.map_coordinates(
+                ortho_reproj[band_idx],
+                [src_y, src_x],
+                order=1,
+                mode='constant',
+                cval=0
+            )
+        
+        new_transform = ref_transform  # Homography doesn't change transform origin
+    
+    elif trans_type == 'deformable':
+        if not use_scipy:
+            raise ValueError("scipy required for deformable transformation")
+        
+        from scipy.interpolate import RBFInterpolator
+        
+        src_points = np.array(transformation.get('src_points', []), dtype=np.float32)
+        dst_points = np.array(transformation.get('dst_points', []), dtype=np.float32)
+        
+        if len(src_points) < 3:
+            raise ValueError('Insufficient points for deformable transformation')
+        
+        # Fit RBF interpolator (reverse: target -> source)
+        rbf = RBFInterpolator(dst_points, src_points, kernel='thin_plate_spline', smoothing=0.0)
+        
+        # Create coordinate grids
+        y_coords, x_coords = np.mgrid[0:ref_height, 0:ref_width].astype(np.float32)
+        
+        # Apply inverse transformation
+        tgt_coords = np.stack([x_coords.ravel(), y_coords.ravel()], axis=1)
+        src_coords = rbf(tgt_coords)
+        src_x = src_coords[:, 0].reshape(ref_height, ref_width)
+        src_y = src_coords[:, 1].reshape(ref_height, ref_width)
+        
+        # Clamp to source bounds
+        src_x = np.clip(src_x, 0, ortho_reproj.shape[2] - 1)
+        src_y = np.clip(src_y, 0, ortho_reproj.shape[1] - 1)
+        
+        for band_idx in range(ortho_reproj.shape[0]):
+            transformed_ortho[band_idx] = ndimage.map_coordinates(
+                ortho_reproj[band_idx],
+                [src_y, src_x],
+                order=1,
+                mode='constant',
+                cval=0
+            )
+        
+        new_transform = ref_transform  # Deformable doesn't change transform origin
+    
+    else:
+        raise ValueError(f"Unknown transformation type: {trans_type}")
+    
+    # Save transformed orthomosaic with JPEG compression
+    with rasterio.open(
+        output_path,
+        'w',
+        driver='GTiff',
+        height=ref_height,
+        width=ref_width,
+        count=ortho_reproj.shape[0],
+        dtype=ortho_reproj.dtype,
+        crs=ref_crs,
+        transform=new_transform if 'new_transform' in locals() else ref_transform,
+        compress='jpeg',
+        jpeg_quality=90,
+        tiled=True,
+        blockxsize=512,
+        blockysize=512
+    ) as dst:
+        dst.write(transformed_ortho)
+    
+    logger.info(f"Applied {trans_type} transformation and saved to: {output_path}")
+    return output_path
+
+
+def apply_comprehensive_transformation_to_orthomosaic(
+    ortho_path: Path,
+    reference_path: Path,
+    output_path: Path,
+    feature_matching_method: str = 'orb',
+    pixel_resolution: Optional[float] = None,
+    log_file_path: Optional[Path] = None,
+    create_visualization: bool = True
+) -> Tuple[Path, Dict]:
+    """
+    Apply comprehensive transformation to orthomosaic using multiple transformation types.
+    
+    Computes shift, affine, homography, and deformable transformations from feature matches,
+    chooses the best based on RMSE, and applies it to the orthomosaic.
+    
+    Args:
+        ortho_path: Path to orthomosaic GeoTIFF
+        reference_path: Path to reference basemap GeoTIFF
+        output_path: Path to save transformed orthomosaic
+        feature_matching_method: Feature matching method ('orb', 'sift', etc.)
+        pixel_resolution: Pixel resolution in meters (for logging)
+        log_file_path: Optional path to log file
+        create_visualization: Whether to create visualization of matches
+        
+    Returns:
+        Tuple of (output_path, transformation_info_dict)
+    """
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    logger.info("Computing feature matches for comprehensive transformation...")
+    
+    # Reproject orthomosaic to match reference first
+    ortho_reproj, metadata = reproject_to_match(ortho_path, reference_path)
+    
+    with rasterio.open(reference_path) as ref:
+        reference_array = ref.read()
+        ref_transform = ref.transform
+        pixel_res = abs(ref_transform[0]) if pixel_resolution is None else pixel_resolution
+    
+    # Get first band for feature matching
+    ortho_band = ortho_reproj[0] if len(ortho_reproj.shape) == 3 else ortho_reproj
+    ref_band = reference_array[0] if len(reference_array.shape) == 3 else reference_array
+    
+    # Compute feature matches
+    errors_2d = compute_feature_matching_2d_error(
+        ortho_band, ref_band,
+        method=feature_matching_method,
+        pixel_resolution=pixel_res,
+        log_file_path=log_file_path,
+        max_spatial_error_meters=10.0,
+        use_tiles=True,
+        tile_size=2048,
+        use_gpu=True
+    )
+    
+    if not errors_2d or not errors_2d.get('match_pairs') or len(errors_2d['match_pairs']) < 3:
+        logger.warning("Insufficient feature matches. Falling back to simple shift.")
+        # Fallback to simple shift
+        if errors_2d and errors_2d.get('mean_offset_x') is not None:
+            shift_x = errors_2d['mean_offset_x']
+            shift_y = errors_2d['mean_offset_y']
+        else:
+            shift_x = 0.0
+            shift_y = 0.0
+        
+        # Use existing apply_2d_shift_to_orthomosaic as fallback
+        return apply_2d_shift_to_orthomosaic(
+            ortho_path, reference_path, output_path,
+            shift_x=shift_x, shift_y=shift_y
+        )
+    
+    # Compute all transformation types and choose best
+    logger.info(f"Computing transformations from {len(errors_2d['match_pairs'])} feature matches...")
+    transformation_results = compute_best_transformation(errors_2d['match_pairs'])
+    
+    if 'error' in transformation_results:
+        logger.warning(f"Transformation computation failed: {transformation_results['error']}. Falling back to simple shift.")
+        shift_x = errors_2d.get('mean_offset_x', 0.0)
+        shift_y = errors_2d.get('mean_offset_y', 0.0)
+        return apply_2d_shift_to_orthomosaic(
+            ortho_path, reference_path, output_path,
+            shift_x=shift_x, shift_y=shift_y
+        )
+    
+    primary_trans = transformation_results['primary']
+    secondary_trans = transformation_results.get('secondary')
+    
+    logger.info(f"Best transformation: {primary_trans['type']} (RMSE: {primary_trans.get('rmse', 'N/A'):.2f} pixels)")
+    if secondary_trans:
+        logger.info(f"Second best: {secondary_trans['type']} (RMSE: {secondary_trans.get('rmse', 'N/A'):.2f} pixels)")
+    
+    # Apply primary transformation
+    apply_transformation_to_orthomosaic(
+        ortho_path, primary_trans, reference_path, output_path
+    )
+    
+    # Create visualization if requested
+    if create_visualization and errors_2d.get('match_pairs'):
+        try:
+            from .visualization import visualize_feature_matches
+            vis_dir = output_path.parent / "visualizations"
+            vis_dir.mkdir(parents=True, exist_ok=True)
+            vis_path = vis_dir / f"comprehensive_transformation_matches_{Path(ortho_path).stem}.png"
+            visualize_feature_matches(
+                ortho_band, ref_band,
+                errors_2d['match_pairs'],
+                vis_path,
+                title=f"Comprehensive Transformation Matches: {Path(ortho_path).stem}"
+            )
+            logger.info(f"Feature match visualization saved to: {vis_path}")
+        except Exception as e:
+            logger.warning(f"Could not create visualization: {e}")
+    
+    # Build transformation info
+    transformation_info = {
+        'transformation_type': primary_trans['type'],
+        'rmse_pixels': primary_trans.get('rmse', 0.0),
+        'num_matches': len(errors_2d['match_pairs']),
+        'num_points_used': primary_trans.get('num_points', 0),
+        'output_path': str(output_path),
+        'all_transformation_results': transformation_results.get('all_results', {})
+    }
+    
+    # Add transformation-specific info
+    if primary_trans['type'] == 'shift':
+        transformation_info['shift_x_pixels'] = primary_trans['shift_x']
+        transformation_info['shift_y_pixels'] = primary_trans['shift_y']
+        transformation_info['shift_x_meters'] = primary_trans['shift_x'] * pixel_res
+        transformation_info['shift_y_meters'] = primary_trans['shift_y'] * pixel_res
+    elif primary_trans['type'] == 'affine':
+        transformation_info['affine_matrix'] = primary_trans['matrix']
+    elif primary_trans['type'] == 'homography':
+        transformation_info['homography_matrix'] = primary_trans['matrix']
+        transformation_info['num_inliers'] = primary_trans.get('num_inliers', 0)
+    
+    if secondary_trans:
+        transformation_info['secondary_type'] = secondary_trans['type']
+        transformation_info['secondary_rmse'] = secondary_trans.get('rmse', 0.0)
+    
+    return output_path, transformation_info
+
+
 def apply_2d_shift_to_orthomosaic(
     ortho_path: Path,
     reference_path: Path,
