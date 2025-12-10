@@ -945,19 +945,73 @@ def compute_feature_matching_2d_error_arosics(
         
         # Method 2: Check for shift_map attribute
         if not has_shift_info and hasattr(coreg, 'shift_map') and coreg.shift_map is not None:
-            shift_map = coreg.shift_map
-            if len(shift_map) >= 2:
-                shift_x_m = float(shift_map[0])
-                shift_y_m = float(shift_map[1])
-                has_shift_info = True
+            try:
+                shift_map = coreg.shift_map
+                # Handle different types: list, tuple, array, or GeoArray
+                if hasattr(shift_map, '__iter__') and not isinstance(shift_map, str):
+                    # Convert to list/array if needed
+                    if hasattr(shift_map, '__len__'):
+                        try:
+                            shift_map_list = list(shift_map) if len(shift_map) >= 2 else None
+                        except (TypeError, AttributeError):
+                            # Might be a GeoArray or similar - try indexing directly
+                            try:
+                                shift_x_m = float(shift_map[0]) if hasattr(shift_map, '__getitem__') else None
+                                shift_y_m = float(shift_map[1]) if hasattr(shift_map, '__getitem__') else None
+                                if shift_x_m is not None and shift_y_m is not None:
+                                    has_shift_info = True
+                            except (IndexError, TypeError):
+                                pass
+                        else:
+                            if shift_map_list and len(shift_map_list) >= 2:
+                                shift_x_m = float(shift_map_list[0])
+                                shift_y_m = float(shift_map_list[1])
+                                has_shift_info = True
+                    else:
+                        # Try direct indexing
+                        try:
+                            shift_x_m = float(shift_map[0])
+                            shift_y_m = float(shift_map[1])
+                            has_shift_info = True
+                        except (IndexError, TypeError):
+                            pass
+            except Exception as e:
+                logger.debug(f"Error accessing shift_map: {e}")
         
         # Method 3: Check for shift attribute (pixel coordinates)
         if hasattr(coreg, 'shift') and coreg.shift is not None:
-            shift = coreg.shift
-            if len(shift) >= 2:
-                shift_x_px = float(shift[0])
-                shift_y_px = float(shift[1])
-                has_shift_info = True
+            try:
+                shift = coreg.shift
+                # Handle different types: list, tuple, array, or GeoArray
+                if hasattr(shift, '__iter__') and not isinstance(shift, str):
+                    # Convert to list/array if needed
+                    if hasattr(shift, '__len__'):
+                        try:
+                            shift_list = list(shift) if len(shift) >= 2 else None
+                        except (TypeError, AttributeError):
+                            # Might be a GeoArray or similar - try indexing directly
+                            try:
+                                shift_x_px = float(shift[0]) if hasattr(shift, '__getitem__') else None
+                                shift_y_px = float(shift[1]) if hasattr(shift, '__getitem__') else None
+                                if shift_x_px is not None and shift_y_px is not None:
+                                    has_shift_info = True
+                            except (IndexError, TypeError):
+                                pass
+                        else:
+                            if shift_list and len(shift_list) >= 2:
+                                shift_x_px = float(shift_list[0])
+                                shift_y_px = float(shift_list[1])
+                                has_shift_info = True
+                    else:
+                        # Try direct indexing
+                        try:
+                            shift_x_px = float(shift[0])
+                            shift_y_px = float(shift[1])
+                            has_shift_info = True
+                        except (IndexError, TypeError):
+                            pass
+            except Exception as e:
+                logger.debug(f"Error accessing shift: {e}")
         
         # Method 4: Check for X_shift_px and Y_shift_px attributes
         if hasattr(coreg, 'X_shift_px') and hasattr(coreg, 'Y_shift_px'):
