@@ -1709,7 +1709,7 @@ def compare_orthomosaic_to_basemap(
     ortho_path: Path,
     basemap_path: Path,
     output_dir: Optional[Path] = None,
-    feature_matching_method: str = 'orb'
+    feature_matching_method: str = 'arosics'  # Default to AROSICS, falls back to ORB if not available
 ) -> Dict:
     """
     Comprehensive comparison of orthomosaic against reference basemap.
