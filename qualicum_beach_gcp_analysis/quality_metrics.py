@@ -2138,7 +2138,7 @@ def compare_orthomosaic_to_basemap(
                 should_try_arosics = AROSICS_AVAILABLE and (feature_matching_method.lower() == 'arosics' or feature_matching_method.lower() == 'orb' or feature_matching_method.lower() == 'auto')
                 
                 if should_try_arosics:
-                logger.info(f"AROSICS available: {AROSICS_AVAILABLE}, method: {feature_matching_method}")
+                    logger.info(f"AROSICS available: {AROSICS_AVAILABLE}, method: {feature_matching_method}")
                 errors_2d = None
                 try:
                     logger.info("Attempting AROSICS co-registration (recommended for satellite imagery)...")
@@ -2179,7 +2179,7 @@ def compare_orthomosaic_to_basemap(
                 
                 # Use specified method (ORB, SIFT, etc.)
                 if feature_matching_method.lower() == 'orb' and CV2_AVAILABLE:
-                errors_2d = None
+                    errors_2d = None
                 # First try pyramid matching (handles large misalignments better)
                 try:
                     logger.info("Attempting pyramid/multi-scale ORB matching...")
@@ -2218,7 +2218,7 @@ def compare_orthomosaic_to_basemap(
                     except Exception as e:
                         logger.warning(f"Regular ORB feature matching failed: {e}")
                 elif feature_matching_method.lower() == 'sift' and CV2_AVAILABLE:
-                errors_2d = None
+                    errors_2d = None
                 # First try pyramid matching
                 try:
                     logger.info("Attempting pyramid/multi-scale SIFT matching...")
