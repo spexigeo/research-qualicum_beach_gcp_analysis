@@ -925,17 +925,56 @@ def compute_feature_matching_2d_error_arosics(
                     progress=False
                 )
         
-        # Calculate shift - AROSICS does this automatically on initialization
-        # Get shift information
-        # AROSICS stores shift in map coordinates (meters) and pixel coordinates
+        # Calculate shift - AROSICS calculates this automatically on initialization
+        # Get shift information - AROSICS stores shift in map coordinates (meters) and pixel coordinates
         shift_x_m = None
         shift_y_m = None
         shift_x_px = None
         shift_y_px = None
         reliability = 0.0
         
-        # Try to get shift from different AROSICS attributes
-        if hasattr(coreg, 'success') and coreg.success:
+        # AROSICS may not have a 'success' attribute, so check for shift attributes directly
+        # Try multiple ways to get the shift information
+        has_shift_info = False
+        
+        # Method 1: Check for X_shift and Y_shift attributes (map coordinates in meters)
+        if hasattr(coreg, 'X_shift') and hasattr(coreg, 'Y_shift'):
+            shift_x_m = float(coreg.X_shift) if coreg.X_shift is not None else None
+            shift_y_m = float(coreg.Y_shift) if coreg.Y_shift is not None else None
+            has_shift_info = shift_x_m is not None and shift_y_m is not None
+        
+        # Method 2: Check for shift_map attribute
+        if not has_shift_info and hasattr(coreg, 'shift_map') and coreg.shift_map is not None:
+            shift_map = coreg.shift_map
+            if len(shift_map) >= 2:
+                shift_x_m = float(shift_map[0])
+                shift_y_m = float(shift_map[1])
+                has_shift_info = True
+        
+        # Method 3: Check for shift attribute (pixel coordinates)
+        if hasattr(coreg, 'shift') and coreg.shift is not None:
+            shift = coreg.shift
+            if len(shift) >= 2:
+                shift_x_px = float(shift[0])
+                shift_y_px = float(shift[1])
+                has_shift_info = True
+        
+        # Method 4: Check for X_shift_px and Y_shift_px attributes
+        if hasattr(coreg, 'X_shift_px') and hasattr(coreg, 'Y_shift_px'):
+            shift_x_px = float(coreg.X_shift_px) if coreg.X_shift_px is not None else None
+            shift_y_px = float(coreg.Y_shift_px) if coreg.Y_shift_px is not None else None
+            has_shift_info = shift_x_px is not None and shift_y_px is not None
+        
+        # Get reliability/confidence if available
+        if hasattr(coreg, 'reliability'):
+            reliability = float(coreg.reliability) if coreg.reliability is not None else 0.0
+        elif hasattr(coreg, 'success') and coreg.success:
+            reliability = 1.0  # If success is True, assume high reliability
+        elif has_shift_info:
+            reliability = 0.8  # If we have shift info, assume moderate reliability
+        
+        # Process shift information if we have it
+        if has_shift_info:
             # Get reliability/confidence
             reliability = getattr(coreg, 'reliability', 0.0)
             
@@ -993,41 +1032,54 @@ def compute_feature_matching_2d_error_arosics(
                 shift_y_m = None
                 rmse_2d_m = None
             
-            errors_2d.update({
-                'mean_offset_x': float(shift_x_px) if shift_x_px is not None else None,
-                'mean_offset_y': float(shift_y_px) if shift_y_px is not None else None,
-                'rmse_2d': float(rmse_2d_px) if rmse_2d_px is not None else None,
-                'num_matches': len(match_pairs),
-                'match_confidence': float(reliability) if reliability else 0.0,
-                'match_pairs': match_pairs,
-                'mean_offset_x_meters': shift_x_m,
-                'mean_offset_y_meters': shift_y_m,
-                'rmse_2d_meters': rmse_2d_m
-            })
-            
-            logger.info(f"AROSICS co-registration: shift=({shift_x_px:.2f}, {shift_y_px:.2f}) px, "
-                       f"reliability={reliability:.3f}")
-            if shift_x_m is not None:
-                logger.info(f"  In meters: shift=({shift_x_m:.4f}, {shift_y_m:.4f}) m")
-            
-            if log_file:
-                log_file.write(f"Method: AROSICS\n")
-                log_file.write(f"Success: True\n")
-                log_file.write(f"Reliability: {reliability:.4f}\n\n")
+            # Only update if we have valid shift information
+            if shift_x_px is not None or shift_x_m is not None:
+                errors_2d.update({
+                    'mean_offset_x': float(shift_x_px) if shift_x_px is not None else None,
+                    'mean_offset_y': float(shift_y_px) if shift_y_px is not None else None,
+                    'rmse_2d': float(rmse_2d_px) if rmse_2d_px is not None else None,
+                    'num_matches': len(match_pairs),
+                    'match_confidence': float(reliability) if reliability else 0.0,
+                    'match_pairs': match_pairs,
+                    'mean_offset_x_meters': shift_x_m,
+                    'mean_offset_y_meters': shift_y_m,
+                    'rmse_2d_meters': rmse_2d_m
+                })
+                
                 if shift_x_px is not None:
-                    log_file.write(f"Shift (pixels): X={shift_x_px:.4f}, Y={shift_y_px:.4f}\n")
-                    log_file.write(f"RMSE 2D (pixels): {rmse_2d_px:.4f}\n")
-                if shift_x_m is not None:
-                    log_file.write(f"Shift (meters): X={shift_x_m:.4f}, Y={shift_y_m:.4f}\n")
-                    log_file.write(f"RMSE 2D (meters): {rmse_2d_m:.4f}\n")
-                log_file.write(f"\nMatch Pairs: {len(match_pairs)}\n")
-                for i, (src_pt, dst_pt) in enumerate(match_pairs):
-                    log_file.write(f"  Match {i+1}: Ortho({src_pt[0]:.2f}, {src_pt[1]:.2f}) -> Basemap({dst_pt[0]:.2f}, {dst_pt[1]:.2f})\n")
+                    logger.info(f"AROSICS co-registration: shift=({shift_x_px:.2f}, {shift_y_px:.2f}) px, "
+                               f"reliability={reliability:.3f}")
+                elif shift_x_m is not None:
+                    logger.info(f"AROSICS co-registration: shift=({shift_x_m:.4f}, {shift_y_m:.4f}) m, "
+                               f"reliability={reliability:.3f}")
+                if shift_x_m is not None and shift_x_px is not None:
+                    logger.info(f"  In meters: shift=({shift_x_m:.4f}, {shift_y_m:.4f}) m")
+            else:
+                logger.warning("AROSICS processed but could not extract shift information")
+                has_shift_info = False
+            
+                if log_file:
+                    log_file.write(f"Method: AROSICS\n")
+                    log_file.write(f"Success: True\n")
+                    log_file.write(f"Reliability: {reliability:.4f}\n\n")
+                    if shift_x_px is not None:
+                        log_file.write(f"Shift (pixels): X={shift_x_px:.4f}, Y={shift_y_px:.4f}\n")
+                        log_file.write(f"RMSE 2D (pixels): {rmse_2d_px:.4f}\n")
+                    if shift_x_m is not None:
+                        log_file.write(f"Shift (meters): X={shift_x_m:.4f}, Y={shift_y_m:.4f}\n")
+                        log_file.write(f"RMSE 2D (meters): {rmse_2d_m:.4f}\n")
+                    log_file.write(f"\nMatch Pairs: {len(match_pairs)}\n")
+                    for i, (src_pt, dst_pt) in enumerate(match_pairs):
+                        log_file.write(f"  Match {i+1}: Ortho({src_pt[0]:.2f}, {src_pt[1]:.2f}) -> Basemap({dst_pt[0]:.2f}, {dst_pt[1]:.2f})\n")
         else:
-            logger.warning("AROSICS co-registration failed or was not successful")
+            logger.warning("AROSICS co-registration failed or was not successful - could not extract shift information")
             if log_file:
                 log_file.write(f"Method: AROSICS\n")
                 log_file.write(f"Success: False\n")
+                log_file.write("Could not extract shift information from AROSICS object\n")
+                # Log available attributes for debugging
+                if hasattr(coreg, '__dict__'):
+                    log_file.write(f"Available attributes: {list(coreg.__dict__.keys())}\n")
     
     except Exception as e:
         logger.warning(f"AROSICS co-registration failed: {e}")
