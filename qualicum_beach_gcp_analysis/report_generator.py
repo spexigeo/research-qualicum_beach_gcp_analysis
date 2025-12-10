@@ -44,7 +44,7 @@ def convert_to_json_serializable(obj: Any) -> Any:
 
 
 def generate_comparison_report(
-    metrics_with_gcps: Dict,
+    metrics_with_gcps: Optional[Dict],
     metrics_without_gcps: Dict,
     output_path: Path,
     basemap_source: str = "ESRI"
@@ -53,7 +53,7 @@ def generate_comparison_report(
     Generate a comprehensive comparison report.
     
     Args:
-        metrics_with_gcps: Quality metrics for orthomosaic with GCPs
+        metrics_with_gcps: Quality metrics for orthomosaic with GCPs (optional, None if not using GCPs)
         metrics_without_gcps: Quality metrics for orthomosaic without GCPs
         output_path: Path to save the report (JSON)
         basemap_source: Source of reference basemap (ESRI or OpenStreetMap)
@@ -64,19 +64,25 @@ def generate_comparison_report(
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
+    # Determine comparison type
+    if metrics_with_gcps is None:
+        comparison_type = 'no_gcps_only'
+    else:
+        comparison_type = 'with_gcps_vs_without_gcps'
+    
     report = {
         'report_metadata': {
             'generated_at': datetime.now().isoformat(),
             'basemap_source': basemap_source,
-            'comparison_type': 'with_gcps_vs_without_gcps'
+            'comparison_type': comparison_type
         },
         'orthomosaic_with_gcps': metrics_with_gcps,
         'orthomosaic_without_gcps': metrics_without_gcps,
         'comparison': {}
     }
     
-    # Compare overall metrics
-    if 'overall' in metrics_with_gcps and 'overall' in metrics_without_gcps:
+    # Compare overall metrics (only if both are available)
+    if metrics_with_gcps is not None and 'overall' in metrics_with_gcps and 'overall' in metrics_without_gcps:
         with_gcps = metrics_with_gcps['overall']
         without_gcps = metrics_without_gcps['overall']
         
