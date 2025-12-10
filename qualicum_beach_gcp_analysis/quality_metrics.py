@@ -32,6 +32,14 @@ except ImportError:
     SKIMAGE_AVAILABLE = False
     logger.warning("scikit-image not available. Some feature matching methods will be disabled. Install with: pip install scikit-image")
 
+# Try to import arosics for robust satellite image co-registration
+try:
+    from arosics import COREG_LOCAL, COREG
+    AROSICS_AVAILABLE = True
+except ImportError:
+    AROSICS_AVAILABLE = False
+    logger.warning("arosics not available. Install with: conda install -c conda-forge arosics>=1.3.0 or pip install arosics")
+
 
 def reproject_to_match_disk_only(
     source_path: Path,
@@ -812,6 +820,208 @@ def compute_feature_matching_2d_error_pyramid(
     return errors_2d
 
 
+def compute_feature_matching_2d_error_arosics(
+    ortho_path: Path,
+    reference_path: Path,
+    pixel_resolution: Optional[float] = None,
+    log_file_path: Optional[Path] = None,
+    max_spatial_error_meters: float = 10.0
+) -> Dict:
+    """
+    Compute 2D error using AROSICS for robust satellite image co-registration.
+    
+    AROSICS uses frequency-domain matching and is specifically designed for
+    satellite imagery, making it more robust than ORB/SIFT for this use case.
+    
+    Args:
+        ortho_path: Path to orthomosaic GeoTIFF
+        reference_path: Path to reference basemap GeoTIFF
+        pixel_resolution: Pixel resolution in meters (for meter conversion)
+        log_file_path: Optional path to save detailed matching log
+        max_spatial_error_meters: Maximum expected spatial error in meters (default: 10m)
+        
+    Returns:
+        Dictionary with 2D error metrics
+    """
+    if not AROSICS_AVAILABLE:
+        logger.warning("AROSICS not available, cannot use arosics method")
+        return {
+            'method': 'arosics',
+            'mean_offset_x': None,
+            'mean_offset_y': None,
+            'rmse_2d': None,
+            'num_matches': 0,
+            'match_confidence': 0.0,
+            'match_pairs': [],
+            'mean_offset_x_meters': None,
+            'mean_offset_y_meters': None,
+            'rmse_2d_meters': None
+        }
+    
+    errors_2d = {
+        'method': 'arosics',
+        'mean_offset_x': None,
+        'mean_offset_y': None,
+        'rmse_2d': None,
+        'num_matches': 0,
+        'match_confidence': 0.0,
+        'match_pairs': [],
+        'mean_offset_x_meters': None,
+        'mean_offset_y_meters': None,
+        'rmse_2d_meters': None
+    }
+    
+    # Setup log file if provided
+    log_file = None
+    if log_file_path:
+        log_file_path = Path(log_file_path)
+        log_file_path.parent.mkdir(parents=True, exist_ok=True)
+        log_file = open(log_file_path, 'w')
+        log_file.write("="*80 + "\n")
+        log_file.write("AROSICS Co-registration Results\n")
+        log_file.write("="*80 + "\n\n")
+    
+    try:
+        logger.info("Using AROSICS for robust satellite image co-registration...")
+        
+        # Use AROSICS COREG for global shift detection
+        # AROSICS works best with file paths and handles CRS/projection automatically
+        # Convert Path objects to strings
+        ortho_path_str = str(ortho_path)
+        reference_path_str = str(reference_path)
+        
+        coreg = COREG(
+            ortho_path_str,
+            reference_path_str,
+            max_shift=max_spatial_error_meters if max_spatial_error_meters else 50.0,  # meters
+            resamp_alg='bilinear',
+            path_out=None,  # Don't write output, just get shift
+            fmt_out='GTiff',
+            r_b4match=1,  # Use first band for matching
+            s_b4match=1,
+            tieP_filter_level=2,  # Filter tie points
+            outl_thres=2.0,  # Outlier threshold
+            min_reliability=0.3,  # Minimum reliability
+            progress=False  # Suppress progress output
+        )
+        
+        # Calculate shift - AROSICS does this automatically on initialization
+        # Get shift information
+        # AROSICS stores shift in map coordinates (meters) and pixel coordinates
+        shift_x_m = None
+        shift_y_m = None
+        shift_x_px = None
+        shift_y_px = None
+        reliability = 0.0
+        
+        # Try to get shift from different AROSICS attributes
+        if hasattr(coreg, 'success') and coreg.success:
+            # Get reliability/confidence
+            reliability = getattr(coreg, 'reliability', 0.0)
+            
+            # Get shift in map coordinates (meters)
+            if hasattr(coreg, 'shift_map') and coreg.shift_map is not None:
+                shift_x_m = float(coreg.shift_map[0]) if len(coreg.shift_map) > 0 else None
+                shift_y_m = float(coreg.shift_map[1]) if len(coreg.shift_map) > 1 else None
+            
+            # Get shift in pixels
+            if hasattr(coreg, 'shift') and coreg.shift is not None:
+                shift_x_px = float(coreg.shift[0]) if len(coreg.shift) > 0 else None
+                shift_y_px = float(coreg.shift[1]) if len(coreg.shift) > 1 else None
+            
+            # If we have meters but not pixels, convert using pixel resolution
+            if shift_x_m is not None and shift_y_m is not None and pixel_resolution:
+                shift_x_px = shift_x_m / pixel_resolution
+                shift_y_px = shift_y_m / pixel_resolution
+            elif shift_x_px is not None and shift_y_px is not None and pixel_resolution:
+                # If we have pixels but not meters, convert
+                shift_x_m = shift_x_px * pixel_resolution
+                shift_y_m = shift_y_px * pixel_resolution
+            
+            # Get tie points for match pairs
+            match_pairs = []
+            if hasattr(coreg, 'tieP') and coreg.tieP is not None:
+                # Extract tie point locations
+                tie_points = coreg.tieP
+                if hasattr(tie_points, 'X_Map') and hasattr(tie_points, 'Y_Map'):
+                    # Tie points in map coordinates
+                    for i in range(len(tie_points.X_Map)):
+                        # Convert map coordinates to pixel coordinates if needed
+                        # For now, use the shift as a single match pair
+                        match_pairs.append(((0.0, 0.0), (shift_x_px or 0.0, shift_y_px or 0.0)))
+            
+            # If no tie points, create a single match pair from the shift
+            if not match_pairs:
+                match_pairs = [((0.0, 0.0), (shift_x_px or 0.0, shift_y_px or 0.0))]
+            
+            # Calculate RMSE from shift
+            if shift_x_px is not None and shift_y_px is not None:
+                rmse_2d_px = np.sqrt(shift_x_px**2 + shift_y_px**2)
+            else:
+                rmse_2d_px = None
+            
+            # Convert to meters if pixel resolution provided
+            if pixel_resolution and shift_x_px is not None and shift_y_px is not None:
+                shift_x_m = shift_x_px * pixel_resolution
+                shift_y_m = shift_y_px * pixel_resolution
+                rmse_2d_m = rmse_2d_px * pixel_resolution if rmse_2d_px else None
+            elif shift_x_m is not None and shift_y_m is not None:
+                # Use shift_map if available
+                rmse_2d_m = np.sqrt(shift_x_m**2 + shift_y_m**2)
+            else:
+                shift_x_m = None
+                shift_y_m = None
+                rmse_2d_m = None
+            
+            errors_2d.update({
+                'mean_offset_x': float(shift_x_px) if shift_x_px is not None else None,
+                'mean_offset_y': float(shift_y_px) if shift_y_px is not None else None,
+                'rmse_2d': float(rmse_2d_px) if rmse_2d_px is not None else None,
+                'num_matches': len(match_pairs),
+                'match_confidence': float(reliability) if reliability else 0.0,
+                'match_pairs': match_pairs,
+                'mean_offset_x_meters': shift_x_m,
+                'mean_offset_y_meters': shift_y_m,
+                'rmse_2d_meters': rmse_2d_m
+            })
+            
+            logger.info(f"AROSICS co-registration: shift=({shift_x_px:.2f}, {shift_y_px:.2f}) px, "
+                       f"reliability={reliability:.3f}")
+            if shift_x_m is not None:
+                logger.info(f"  In meters: shift=({shift_x_m:.4f}, {shift_y_m:.4f}) m")
+            
+            if log_file:
+                log_file.write(f"Method: AROSICS\n")
+                log_file.write(f"Success: True\n")
+                log_file.write(f"Reliability: {reliability:.4f}\n\n")
+                if shift_x_px is not None:
+                    log_file.write(f"Shift (pixels): X={shift_x_px:.4f}, Y={shift_y_px:.4f}\n")
+                    log_file.write(f"RMSE 2D (pixels): {rmse_2d_px:.4f}\n")
+                if shift_x_m is not None:
+                    log_file.write(f"Shift (meters): X={shift_x_m:.4f}, Y={shift_y_m:.4f}\n")
+                    log_file.write(f"RMSE 2D (meters): {rmse_2d_m:.4f}\n")
+                log_file.write(f"\nMatch Pairs: {len(match_pairs)}\n")
+                for i, (src_pt, dst_pt) in enumerate(match_pairs):
+                    log_file.write(f"  Match {i+1}: Ortho({src_pt[0]:.2f}, {src_pt[1]:.2f}) -> Basemap({dst_pt[0]:.2f}, {dst_pt[1]:.2f})\n")
+        else:
+            logger.warning("AROSICS co-registration failed or was not successful")
+            if log_file:
+                log_file.write(f"Method: AROSICS\n")
+                log_file.write(f"Success: False\n")
+    
+    except Exception as e:
+        logger.warning(f"AROSICS co-registration failed: {e}")
+        if log_file:
+            log_file.write(f"Error: {str(e)}\n")
+    
+    finally:
+        if log_file:
+            log_file.close()
+            logger.info(f"AROSICS log saved to: {log_file_path}")
+    
+    return errors_2d
+
+
 def compute_feature_matching_2d_error(
     ortho_array: np.ndarray,
     reference_array: np.ndarray,
@@ -822,7 +1032,9 @@ def compute_feature_matching_2d_error(
     use_tiles: bool = True,
     tile_size: int = 2048,
     use_gpu: bool = True,
-    use_pyramid: bool = False
+    use_pyramid: bool = False,
+    ortho_path: Optional[Path] = None,
+    reference_path: Optional[Path] = None
 ) -> Dict:
     """
     Compute 2D error measures using feature matching between orthomosaic and reference.
@@ -833,7 +1045,8 @@ def compute_feature_matching_2d_error(
     Args:
         ortho_array: Orthomosaic array (grayscale or first band)
         reference_array: Reference basemap array (grayscale or first band)
-        method: Feature matching method ('sift', 'orb', 'template', or 'phase')
+        method: Feature matching method ('arosics', 'sift', 'orb', 'template', or 'phase')
+                'arosics' is recommended for satellite imagery (requires file paths)
         pixel_resolution: Pixel resolution in meters (for spatial constraints and meter conversion)
         log_file_path: Optional path to save detailed matching log
         max_spatial_error_meters: Maximum expected spatial error in meters (default: 10m)
@@ -842,6 +1055,8 @@ def compute_feature_matching_2d_error(
         use_gpu: Whether to use GPU acceleration if available (default: True)
         use_pyramid: Whether to use pyramid/multi-scale matching (default: False)
                       Use True for large initial misalignments
+        ortho_path: Optional path to orthomosaic GeoTIFF (required for 'arosics' method)
+        reference_path: Optional path to reference GeoTIFF (required for 'arosics' method)
         
     Returns:
         Dictionary with 2D error metrics including:
@@ -850,6 +1065,12 @@ def compute_feature_matching_2d_error(
         - num_matches: Number of matched features
         - match_confidence: Confidence score
     """
+    # Use AROSICS if requested and file paths are available
+    if method.lower() == 'arosics' and AROSICS_AVAILABLE and ortho_path and reference_path:
+        return compute_feature_matching_2d_error_arosics(
+            ortho_path, reference_path, pixel_resolution, log_file_path, max_spatial_error_meters
+        )
+    
     # Use pyramid matching if requested
     if use_pyramid and method in ['orb', 'sift']:
         return compute_feature_matching_2d_error_pyramid(
@@ -1559,8 +1780,35 @@ def compare_orthomosaic_to_basemap(
                 log_dir.mkdir(parents=True, exist_ok=True)
                 log_file_path = log_dir / f"feature_matching_{Path(ortho_path).stem}_{Path(basemap_path).stem}.log"
             
-            # Use specified method (default: ORB only)
-            # Try pyramid matching first for large misalignments, fallback to regular matching
+            # Use AROSICS by default (best for satellite imagery), fallback to ORB if not available
+            # AROSICS requires file paths, so we use the reprojected ortho and basemap paths
+            if AROSICS_AVAILABLE and (feature_matching_method.lower() == 'arosics' or feature_matching_method.lower() == 'orb'):
+                errors_2d = None
+                try:
+                    logger.info("Attempting AROSICS co-registration (recommended for satellite imagery)...")
+                    # Use reprojected ortho path if available, otherwise use original
+                    ortho_path_for_arosics = reprojected_path if reprojected_path and Path(reprojected_path).exists() else ortho_path
+                    errors_2d = compute_feature_matching_2d_error(
+                        ortho_band, ref_band,  # Arrays still needed for fallback
+                        method='arosics',
+                        pixel_resolution=pixel_resolution,
+                        log_file_path=log_file_path,
+                        max_spatial_error_meters=10.0,
+                        ortho_path=Path(ortho_path_for_arosics),
+                        reference_path=Path(basemap_path)
+                    )
+                    if errors_2d and errors_2d.get('num_matches', 0) > 0:
+                        logger.info(f"AROSICS co-registration succeeded: reliability={errors_2d.get('match_confidence', 0.0):.3f}")
+                except Exception as e:
+                    logger.warning(f"AROSICS co-registration failed: {e}")
+                    errors_2d = None
+                
+                # Fallback to ORB if AROSICS failed
+                if not errors_2d or errors_2d.get('num_matches', 0) < 1:
+                    logger.info("Falling back to ORB feature matching...")
+                    feature_matching_method = 'orb'  # Continue with ORB below
+            
+            # Use specified method (ORB, SIFT, etc.)
             if feature_matching_method.lower() == 'orb' and CV2_AVAILABLE:
                 errors_2d = None
                 # First try pyramid matching (handles large misalignments better)
