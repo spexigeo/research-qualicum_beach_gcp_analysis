@@ -1160,13 +1160,41 @@ def compute_feature_matching_2d_error_arosics(
                         log_file.write(f"  Match {i+1}: Ortho({src_pt[0]:.2f}, {src_pt[1]:.2f}) -> Basemap({dst_pt[0]:.2f}, {dst_pt[1]:.2f})\n")
         else:
             logger.warning("AROSICS co-registration failed or was not successful - could not extract shift information")
+            # Log detailed debugging information
+            try:
+                attrs = [attr for attr in dir(coreg) if not attr.startswith('_')]
+                logger.warning(f"AROSICS object has {len(attrs)} attributes. Checking for shift information...")
+                shift_attrs = [attr for attr in attrs if 'shift' in attr.lower() or 'x' in attr.lower() or 'y' in attr.lower()]
+                if shift_attrs:
+                    logger.warning(f"Found potential shift attributes: {shift_attrs[:10]}")
+                    for attr in shift_attrs[:5]:  # Check first 5
+                        try:
+                            val = getattr(coreg, attr)
+                            logger.warning(f"  {attr} = {val} (type: {type(val).__name__})")
+                        except Exception as e:
+                            logger.warning(f"  {attr} access failed: {e}")
+            except Exception as e:
+                logger.warning(f"Error inspecting AROSICS object: {e}")
+            
             if log_file:
                 log_file.write(f"Method: AROSICS\n")
                 log_file.write(f"Success: False\n")
                 log_file.write("Could not extract shift information from AROSICS object\n")
                 # Log available attributes for debugging
-                if hasattr(coreg, '__dict__'):
-                    log_file.write(f"Available attributes: {list(coreg.__dict__.keys())}\n")
+                try:
+                    attrs = [attr for attr in dir(coreg) if not attr.startswith('_')]
+                    log_file.write(f"Total attributes: {len(attrs)}\n")
+                    shift_attrs = [attr for attr in attrs if 'shift' in attr.lower()]
+                    log_file.write(f"Shift-related attributes: {shift_attrs}\n")
+                    # Try to get values for shift-related attributes
+                    for attr in shift_attrs[:10]:
+                        try:
+                            val = getattr(coreg, attr)
+                            log_file.write(f"  {attr} = {val} (type: {type(val).__name__})\n")
+                        except Exception as e:
+                            log_file.write(f"  {attr} = <error: {e}>\n")
+                except Exception as e:
+                    log_file.write(f"Error inspecting attributes: {e}\n")
     
     except Exception as e:
         logger.warning(f"AROSICS co-registration failed: {e}")
