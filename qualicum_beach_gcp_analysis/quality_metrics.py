@@ -1207,13 +1207,23 @@ def compute_feature_matching_2d_error_arosics(
             try:
                 attrs = [attr for attr in dir(coreg) if not attr.startswith('_')]
                 logger.warning(f"AROSICS object has {len(attrs)} attributes. Checking for shift information...")
-                shift_attrs = [attr for attr in attrs if 'shift' in attr.lower() or 'x' in attr.lower() or 'y' in attr.lower()]
+                shift_attrs = [attr for attr in attrs if 'shift' in attr.lower()]
+                # Also check for common AROSICS shift attribute names
+                common_shift_attrs = ['X_shift', 'Y_shift', 'x_shift', 'y_shift', 'shift', 'shift_map', 
+                                     'spatial_shift', 'X_shift_px', 'Y_shift_px', 'dx', 'dy']
+                for attr in common_shift_attrs:
+                    if attr not in shift_attrs and hasattr(coreg, attr):
+                        shift_attrs.append(attr)
+                
                 if shift_attrs:
-                    logger.warning(f"Found potential shift attributes: {shift_attrs[:10]}")
-                    for attr in shift_attrs[:5]:  # Check first 5
+                    logger.warning(f"Found potential shift attributes: {shift_attrs}")
+                    for attr in shift_attrs:  # Check all shift-related attributes
                         try:
                             val = getattr(coreg, attr)
                             logger.warning(f"  {attr} = {val} (type: {type(val).__name__})")
+                            # If it's a method, note that
+                            if callable(val):
+                                logger.warning(f"    -> This is a method, not an attribute")
                         except Exception as e:
                             logger.warning(f"  {attr} access failed: {e}")
             except Exception as e:
