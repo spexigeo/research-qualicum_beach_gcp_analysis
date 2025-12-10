@@ -34,7 +34,7 @@ except ImportError:
 
 # Try to import arosics for robust satellite image co-registration
 try:
-    from arosics import COREG_LOCAL, COREG
+    from arosics import COREG_LOCAL, COREG, CoReg
     AROSICS_AVAILABLE = True
 except ImportError:
     AROSICS_AVAILABLE = False
@@ -890,20 +890,40 @@ def compute_feature_matching_2d_error_arosics(
         ortho_path_str = str(ortho_path)
         reference_path_str = str(reference_path)
         
-        coreg = COREG(
-            ortho_path_str,
-            reference_path_str,
-            max_shift=max_spatial_error_meters if max_spatial_error_meters else 50.0,  # meters
-            resamp_alg='bilinear',
-            path_out=None,  # Don't write output, just get shift
-            fmt_out='GTiff',
-            r_b4match=1,  # Use first band for matching
-            s_b4match=1,
-            tieP_filter_level=2,  # Filter tie points
-            outl_thres=2.0,  # Outlier threshold
-            min_reliability=0.3,  # Minimum reliability
-            progress=False  # Suppress progress output
-        )
+        # Use COREG for global shift detection
+        # Try COREG first (newer API), fallback to CoReg if needed
+        try:
+            coreg = COREG(
+                ortho_path_str,
+                reference_path_str,
+                max_shift=max_spatial_error_meters if max_spatial_error_meters else 50.0,  # meters
+                path_out=None,  # Don't write output, just get shift
+                fmt_out='GTiff',
+                r_b4match=1,  # Use first band for matching
+                s_b4match=1,
+                tieP_filter_level=2,  # Filter tie points
+                outl_thres=2.0,  # Outlier threshold
+                min_reliability=0.3,  # Minimum reliability
+                progress=False  # Suppress progress output
+            )
+        except TypeError:
+            # Fallback to CoReg with different parameter names
+            logger.debug("COREG failed, trying CoReg with different parameters...")
+            coreg = CoReg(
+                im_ref=reference_path_str,
+                im_tgt=ortho_path_str,
+                max_shift=max_spatial_error_meters if max_spatial_error_meters else 50.0,  # meters
+                resamp_alg_deshift='bilinear',  # Resampling for shift correction
+                resamp_alg_calc='bilinear',  # Resampling for calculating shifts
+                path_out=None,  # Don't write output, just get shift
+                fmt_out='GTiff',
+                r_b4match=1,  # Use first band for matching
+                s_b4match=1,
+                tieP_filter_level=2,  # Filter tie points
+                outl_thres=2.0,  # Outlier threshold
+                min_reliability=0.3,  # Minimum reliability
+                progress=False  # Suppress progress output
+            )
         
         # Calculate shift - AROSICS does this automatically on initialization
         # Get shift information
