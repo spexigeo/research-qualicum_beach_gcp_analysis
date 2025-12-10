@@ -1047,7 +1047,7 @@ def compute_feature_matching_2d_error_arosics(
         
         # Try additional methods to get shift - AROSICS might store it differently
         if not has_shift_info:
-            # Method: Call calculate_spatial_shifts() to get the shift
+            # Method 1: Call calculate_spatial_shifts() to calculate and get the shift
             if hasattr(coreg, 'calculate_spatial_shifts'):
                 try:
                     logger.debug("Calling calculate_spatial_shifts() method...")
@@ -1073,29 +1073,71 @@ def compute_feature_matching_2d_error_arosics(
                     import traceback
                     logger.debug(f"Traceback: {traceback.format_exc()}")
             
-            # After calling calculate_spatial_shifts, check if shift attributes are now available
+            # Method 2: Extract from 'shift' GeoArray object (this is the actual shift array)
+            if not has_shift_info and hasattr(coreg, 'shift') and coreg.shift is not None:
+                try:
+                    shift_obj = coreg.shift
+                    logger.debug(f"Found 'shift' object: {type(shift_obj)}")
+                    # Try to extract values from GeoArray - it might be indexable or have attributes
+                    # GeoArray objects can often be indexed like arrays
+                    try:
+                        # Try indexing: shift[0] for X, shift[1] for Y
+                        if hasattr(shift_obj, '__getitem__'):
+                            shift_x_val = shift_obj[0]
+                            shift_y_val = shift_obj[1]
+                            # Convert to float if needed
+                            if hasattr(shift_x_val, '__float__'):
+                                shift_x_m = float(shift_x_val)
+                            else:
+                                shift_x_m = float(shift_x_val) if shift_x_val is not None else None
+                            if hasattr(shift_y_val, '__float__'):
+                                shift_y_m = float(shift_y_val)
+                            else:
+                                shift_y_m = float(shift_y_val) if shift_y_val is not None else None
+                            if shift_x_m is not None and shift_y_m is not None:
+                                has_shift_info = True
+                                logger.debug(f"Extracted shift from GeoArray: ({shift_x_m}, {shift_y_m})")
+                    except (IndexError, TypeError, AttributeError) as e:
+                        logger.debug(f"Could not index shift GeoArray: {e}")
+                        # Try accessing as attributes
+                        try:
+                            if hasattr(shift_obj, 'X') or hasattr(shift_obj, 'x'):
+                                x_attr = 'X' if hasattr(shift_obj, 'X') else 'x'
+                                y_attr = 'Y' if hasattr(shift_obj, 'Y') else 'y'
+                                shift_x_m = float(getattr(shift_obj, x_attr))
+                                shift_y_m = float(getattr(shift_obj, y_attr))
+                                has_shift_info = True
+                        except Exception as e2:
+                            logger.debug(f"Could not access shift as attributes: {e2}")
+                except Exception as e:
+                    logger.debug(f"Error accessing shift GeoArray: {e}")
+            
+            # Method 3: After calling calculate_spatial_shifts, check if shift attributes are now populated
             if not has_shift_info:
                 # Check for shift attributes that might be populated after calculation
-                for attr_name in ['X_shift', 'Y_shift', 'x_shift', 'y_shift', 'shift_x', 'shift_y', 
-                                 'X_shift_px', 'Y_shift_px', 'shift', 'shift_map', 'spatial_shift']:
+                for attr_name in ['x_shift_map', 'y_shift_map', 'x_shift_px', 'y_shift_px', 
+                                 'X_shift', 'Y_shift', 'shift_x', 'shift_y', 'shift_map']:
                     if hasattr(coreg, attr_name):
                         try:
                             val = getattr(coreg, attr_name)
                             if val is not None:
                                 logger.debug(f"Found {attr_name} = {val} (type: {type(val)})")
-                                # Try to extract shift from this attribute
-                                if isinstance(val, (list, tuple)) and len(val) >= 2:
-                                    if 'x' in attr_name.lower() or attr_name == 'shift' or attr_name == 'shift_map':
-                                        shift_x_m = float(val[0])
-                                        shift_y_m = float(val[1])
+                                # Handle different types
+                                if isinstance(val, (int, float)):
+                                    if 'x' in attr_name.lower():
+                                        shift_x_m = float(val) if 'map' in attr_name else None
+                                        shift_x_px = float(val) if 'px' in attr_name else None
+                                    elif 'y' in attr_name.lower():
+                                        shift_y_m = float(val) if 'map' in attr_name else None
+                                        shift_y_px = float(val) if 'px' in attr_name else None
+                                    if (shift_x_m is not None or shift_x_px is not None) and \
+                                       (shift_y_m is not None or shift_y_px is not None):
                                         has_shift_info = True
                                         break
-                                elif isinstance(val, (int, float)):
-                                    if 'x' in attr_name.lower():
-                                        shift_x_m = float(val)
-                                    elif 'y' in attr_name.lower():
-                                        shift_y_m = float(val)
-                                    if shift_x_m is not None and shift_y_m is not None:
+                                elif isinstance(val, (list, tuple)) and len(val) >= 2:
+                                    if attr_name == 'shift_map':
+                                        shift_x_m = float(val[0])
+                                        shift_y_m = float(val[1])
                                         has_shift_info = True
                                         break
                         except Exception as e:
