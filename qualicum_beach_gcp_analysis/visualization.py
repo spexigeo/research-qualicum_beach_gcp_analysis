@@ -821,13 +821,16 @@ def visualize_feature_matches(
     reference_array: np.ndarray,
     match_pairs: List[Tuple[Tuple[float, float], Tuple[float, float]]],
     output_path: Path,
-    title: str = "Feature Matches"
+    title: str = "Feature Matches",
+    ortho_keypoints: Optional[List] = None,
+    basemap_keypoints: Optional[List] = None
 ) -> Path:
     """
     Visualize feature matches between orthomosaic and reference basemap.
     
     Shows orthomosaic on the left, reference on the right, with match pairs
-    shown as points (red for ortho, green for basemap).
+    shown as points (red for ortho, green for basemap) connected by lines.
+    Optionally shows all detected keypoints (not just matched ones).
     
     Args:
         ortho_array: Orthomosaic array (grayscale or first band)
@@ -835,6 +838,8 @@ def visualize_feature_matches(
         match_pairs: List of (src_point, dst_point) tuples where each point is (x, y)
         output_path: Path to save visualization
         title: Title for the plot
+        ortho_keypoints: Optional list of all detected keypoints on ortho (OpenCV KeyPoint objects)
+        basemap_keypoints: Optional list of all detected keypoints on basemap (OpenCV KeyPoint objects)
         
     Returns:
         Path to saved visualization
@@ -867,19 +872,34 @@ def visualize_feature_matches(
     ax2.set_title('Reference Basemap', fontsize=14, fontweight='bold')
     ax2.axis('off')
     
-    # Draw match pairs with points
+    # Draw all detected keypoints if provided (as small dots)
+    if ortho_keypoints is not None:
+        for kp in ortho_keypoints:
+            ax1.plot(kp.pt[0], kp.pt[1], 'r.', markersize=1, alpha=0.3, zorder=5)
+    
+    if basemap_keypoints is not None:
+        for kp in basemap_keypoints:
+            ax2.plot(kp.pt[0], kp.pt[1], 'g.', markersize=1, alpha=0.3, zorder=5)
+    
+    # Draw match pairs with points and connecting lines
     # Limit to first 100 matches for clarity
     matches_to_show = match_pairs[:100]
     
     for src_pt, dst_pt in matches_to_show:
         # Left image: plot point at src_pt with red circle
-        ax1.plot(src_pt[0], src_pt[1], 'ro', markersize=3, alpha=0.8, zorder=10)
+        ax1.plot(src_pt[0], src_pt[1], 'ro', markersize=4, alpha=0.9, zorder=10)
         
         # Right image: plot point at dst_pt with green circle
-        ax2.plot(dst_pt[0], dst_pt[1], 'go', markersize=3, alpha=0.8, zorder=10)
+        ax2.plot(dst_pt[0], dst_pt[1], 'go', markersize=4, alpha=0.9, zorder=10)
     
-    # Add text annotation showing number of matches
-    ax1.text(0.02, 0.98, f'{len(matches_to_show)} matches shown', 
+    # Add text annotation showing number of matches and keypoints
+    match_text = f'{len(matches_to_show)} matches shown'
+    if ortho_keypoints is not None:
+        match_text += f'\n{len(ortho_keypoints)} ortho keypoints'
+    if basemap_keypoints is not None:
+        match_text += f'\n{len(basemap_keypoints)} basemap keypoints'
+    
+    ax1.text(0.02, 0.98, match_text, 
              transform=ax1.transAxes, fontsize=10, verticalalignment='top',
              bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
     
@@ -889,10 +909,12 @@ def visualize_feature_matches(
     # Add legend
     from matplotlib.patches import Patch
     legend_elements = [
-        Patch(facecolor='red', label='Ortho Keypoints'),
-        Patch(facecolor='green', label='Basemap Keypoints'),
+        Patch(facecolor='red', label='Ortho Keypoints (matched)'),
+        Patch(facecolor='green', label='Basemap Keypoints (matched)'),
     ]
-    fig.legend(handles=legend_elements, loc='upper center', ncol=2, fontsize=10)
+    if ortho_keypoints is not None or basemap_keypoints is not None:
+        legend_elements.append(Patch(facecolor='gray', label='All detected keypoints (faint)'))
+    fig.legend(handles=legend_elements, loc='upper center', ncol=3, fontsize=10)
     
     # Save figure
     plt.tight_layout(rect=[0, 0, 1, 0.96])

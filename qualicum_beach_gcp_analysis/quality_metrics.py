@@ -981,6 +981,33 @@ def compute_feature_matching_2d_error(
                 kp1, des1 = detector.detectAndCompute(ortho_norm, None)
                 kp2, des2 = detector.detectAndCompute(ref_norm, None)
             
+            # Log ALL detected keypoints (not just matches)
+            if log_file:
+                log_file.write(f"\n{'='*80}\n")
+                log_file.write(f"KEYPOINT DETECTION RESULTS\n")
+                log_file.write(f"{'='*80}\n")
+                log_file.write(f"Ortho keypoints detected: {len(kp1) if kp1 is not None else 0}\n")
+                log_file.write(f"Basemap keypoints detected: {len(kp2) if kp2 is not None else 0}\n\n")
+                
+                if kp1 is not None and len(kp1) > 0:
+                    log_file.write(f"Ortho Keypoint Locations (x, y):\n")
+                    for i, kp in enumerate(kp1[:100]):  # Limit to first 100 for readability
+                        log_file.write(f"  KP{i+1}: ({kp.pt[0]:.2f}, {kp.pt[1]:.2f})\n")
+                    if len(kp1) > 100:
+                        log_file.write(f"  ... and {len(kp1) - 100} more keypoints\n")
+                    log_file.write("\n")
+                
+                if kp2 is not None and len(kp2) > 0:
+                    log_file.write(f"Basemap Keypoint Locations (x, y):\n")
+                    for i, kp in enumerate(kp2[:100]):  # Limit to first 100 for readability
+                        log_file.write(f"  KP{i+1}: ({kp.pt[0]:.2f}, {kp.pt[1]:.2f})\n")
+                    if len(kp2) > 100:
+                        log_file.write(f"  ... and {len(kp2) - 100} more keypoints\n")
+                    log_file.write("\n")
+            
+            # Also log to console
+            logger.info(f"Detected {len(kp1) if kp1 is not None else 0} keypoints in ortho, {len(kp2) if kp2 is not None else 0} in basemap")
+            
             if des1 is not None and des2 is not None and len(des1) > 0 and len(des2) > 0:
                 # Match features with spatial constraints
                 if search_window_pixels and search_window_pixels > 0:
@@ -1125,7 +1152,9 @@ def compute_feature_matching_2d_error(
                             'match_pairs': match_pairs,
                             'mean_offset_x_meters': mean_offset_x_meters,
                             'mean_offset_y_meters': mean_offset_y_meters,
-                            'rmse_2d_meters': rmse_2d_meters
+                            'rmse_2d_meters': rmse_2d_meters,
+                            'ortho_keypoints': kp1,  # Store keypoints for visualization
+                            'basemap_keypoints': kp2
                         })
                         
                         logger.info(f"Feature matching ({method}): {len(good_matches)} matches, "
@@ -1146,16 +1175,36 @@ def compute_feature_matching_2d_error(
                                 log_file.write(f"Pixel resolution: {pixel_resolution:.4f} m/pixel\n")
                                 log_file.write(f"Offset (meters): X={mean_offset_x_meters:.4f}, Y={mean_offset_y_meters:.4f}\n")
                                 log_file.write(f"RMSE 2D (meters): {rmse_2d_meters:.4f}\n")
-                            log_file.write(f"\nMatch Pairs (after RANSAC):\n")
-                            log_file.write(f"{'Match':<8} {'Ortho Pixel (x,y)':<25} {'Basemap Pixel (x,y)':<25} {'Offset (px)':<20} {'Distance (px)':<15}\n")
-                            log_file.write("-" * 100 + "\n")
+                            log_file.write(f"\n{'='*80}\n")
+                            log_file.write(f"MATCH PAIRS (after RANSAC)\n")
+                            log_file.write(f"{'='*80}\n")
+                            log_file.write(f"{'Match':<8} {'Ortho Pixel (x,y)':<25} {'Basemap Pixel (x,y)':<25} {'Offset (px)':<20} {'Distance (px)':<15} {'Offset (m)':<20} {'Distance (m)':<15}\n")
+                            log_file.write("-" * 140 + "\n")
                             for i, (src_pt, dst_pt) in enumerate(match_pairs):
                                 offset_x = dst_pt[0] - src_pt[0]
                                 offset_y = dst_pt[1] - src_pt[1]
-                                dist = np.sqrt(offset_x**2 + offset_y**2)
-                                log_file.write(f"{i+1:<8} ({src_pt[0]:>8.2f}, {src_pt[1]:>8.2f})  ({dst_pt[0]:>8.2f}, {dst_pt[1]:>8.2f})  "
-                                            f"({offset_x:>7.2f}, {offset_y:>7.2f})  {dist:>10.2f}\n")
+                                dist_px = np.sqrt(offset_x**2 + offset_y**2)
+                                if pixel_resolution:
+                                    offset_x_m = offset_x * pixel_resolution
+                                    offset_y_m = offset_y * pixel_resolution
+                                    dist_m = dist_px * pixel_resolution
+                                    log_file.write(f"{i+1:<8} ({src_pt[0]:>8.2f}, {src_pt[1]:>8.2f})  ({dst_pt[0]:>8.2f}, {dst_pt[1]:>8.2f})  "
+                                                f"({offset_x:>7.2f}, {offset_y:>7.2f})  {dist_px:>10.2f}  "
+                                                f"({offset_x_m:>7.2f}, {offset_y_m:>7.2f})  {dist_m:>10.2f}\n")
+                                else:
+                                    log_file.write(f"{i+1:<8} ({src_pt[0]:>8.2f}, {src_pt[1]:>8.2f})  ({dst_pt[0]:>8.2f}, {dst_pt[1]:>8.2f})  "
+                                                f"({offset_x:>7.2f}, {offset_y:>7.2f})  {dist_px:>10.2f}  "
+                                                f"{'N/A':<20} {'N/A':<15}\n")
                             log_file.write("\n")
+                            
+                            # Also print summary to console
+                            logger.info(f"Match details: {len(match_pairs)} matches found")
+                            if len(match_pairs) > 0:
+                                logger.info(f"  First match: Ortho({match_pairs[0][0][0]:.1f}, {match_pairs[0][0][1]:.1f}) -> Basemap({match_pairs[0][1][0]:.1f}, {match_pairs[0][1][1]:.1f})")
+                                if pixel_resolution:
+                                    first_offset_x = (match_pairs[0][1][0] - match_pairs[0][0][0]) * pixel_resolution
+                                    first_offset_y = (match_pairs[0][1][1] - match_pairs[0][0][1]) * pixel_resolution
+                                    logger.info(f"  First match offset: ({first_offset_x:.2f}, {first_offset_y:.2f}) m")
                     else:
                         logger.warning(f"Feature matching ({method}) shift ({mean_offset_x:.1f}, {mean_offset_y:.1f}) too large, rejecting")
                         if log_file:
@@ -1629,11 +1678,16 @@ def compare_orthomosaic_to_basemap(
                     vis_dir = Path(output_dir) / "visualizations" if output_dir else Path("outputs/visualizations")
                     vis_dir.mkdir(parents=True, exist_ok=True)
                     vis_path = vis_dir / f"feature_matches_{Path(ortho_path).stem}_{Path(basemap_path).stem}.png"
+                    # Get keypoints if available (stored during matching)
+                    ortho_kp = errors_2d.get('ortho_keypoints', None)
+                    basemap_kp = errors_2d.get('basemap_keypoints', None)
                     visualize_feature_matches(
                         ortho_band, ref_band,
                         errors_2d['match_pairs'],
                         vis_path,
-                        title=f"Feature Matches: {Path(ortho_path).stem} vs {Path(basemap_path).stem}"
+                        title=f"Feature Matches: {Path(ortho_path).stem} vs {Path(basemap_path).stem}",
+                        ortho_keypoints=ortho_kp,
+                        basemap_keypoints=basemap_kp
                     )
                     logger.info(f"Feature match visualization saved to: {vis_path}")
                 except Exception as e:
