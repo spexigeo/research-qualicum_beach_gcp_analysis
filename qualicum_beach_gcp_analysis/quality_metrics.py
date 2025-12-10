@@ -1782,7 +1782,10 @@ def compare_orthomosaic_to_basemap(
             
             # Use AROSICS by default (best for satellite imagery), fallback to ORB if not available
             # AROSICS requires file paths, so we use the ortho path (which may already be downsampled) and basemap path
-            if AROSICS_AVAILABLE and (feature_matching_method.lower() == 'arosics' or feature_matching_method.lower() == 'orb'):
+            should_try_arosics = AROSICS_AVAILABLE and (feature_matching_method.lower() == 'arosics' or feature_matching_method.lower() == 'orb' or feature_matching_method.lower() == 'auto')
+            
+            if should_try_arosics:
+                logger.info(f"AROSICS available: {AROSICS_AVAILABLE}, method: {feature_matching_method}")
                 errors_2d = None
                 try:
                     logger.info("Attempting AROSICS co-registration (recommended for satellite imagery)...")
