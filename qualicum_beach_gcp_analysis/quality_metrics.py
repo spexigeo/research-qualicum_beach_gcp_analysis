@@ -657,12 +657,12 @@ def compute_feature_matching_2d_error(
                         x_end = min(x + tile_size, ortho_norm.shape[1])
                         tile = ortho_norm[y:y_end, x:x_end]
                         kp_tile, des_tile = detector.detectAndCompute(tile, None)
-                        if kp_tile and des_tile is not None:
+                        if len(kp_tile) > 0 and des_tile is not None:
                             # Adjust keypoint coordinates to global image coordinates
                             for kp in kp_tile:
                                 kp.pt = (kp.pt[0] + x, kp.pt[1] + y)
                             kp1_list.extend(kp_tile)
-                            if des1_list:
+                            if des1_list is not None and len(des1_list) > 0:
                                 des1_list = np.vstack([des1_list, des_tile])
                             else:
                                 des1_list = des_tile
@@ -674,12 +674,12 @@ def compute_feature_matching_2d_error(
                         x_end = min(x + tile_size, ref_norm.shape[1])
                         tile = ref_norm[y:y_end, x:x_end]
                         kp_tile, des_tile = detector.detectAndCompute(tile, None)
-                        if kp_tile and des_tile is not None:
+                        if len(kp_tile) > 0 and des_tile is not None:
                             # Adjust keypoint coordinates to global image coordinates
                             for kp in kp_tile:
                                 kp.pt = (kp.pt[0] + x, kp.pt[1] + y)
                             kp2_list.extend(kp_tile)
-                            if des2_list:
+                            if des2_list is not None and len(des2_list) > 0:
                                 des2_list = np.vstack([des2_list, des_tile])
                             else:
                                 des2_list = des_tile
@@ -1283,7 +1283,7 @@ def compare_orthomosaic_to_basemap(
                     errors_2d = best_errors_2d
             
             # Create visualization if matches found
-            if errors_2d and errors_2d.get('match_pairs') and len(errors_2d['match_pairs']) > 0:
+            if errors_2d is not None and errors_2d.get('match_pairs') is not None and len(errors_2d.get('match_pairs', [])) > 0:
                 try:
                     from .visualization import visualize_feature_matches
                     vis_dir = Path(output_dir) / "visualizations" if output_dir else Path("outputs/visualizations")
@@ -2282,7 +2282,7 @@ def apply_2d_shift_to_orthomosaic(
                 logger.info(f"  In meters: X={shift_x_meters:.4f} m, Y={shift_y_meters:.4f} m")
             
             # Create visualization if matches found
-            if best_errors_2d.get('match_pairs') and len(best_errors_2d['match_pairs']) > 0:
+            if best_errors_2d is not None and best_errors_2d.get('match_pairs') is not None and len(best_errors_2d.get('match_pairs', [])) > 0:
                 try:
                     from .visualization import visualize_feature_matches
                     vis_dir = output_path.parent / "visualizations"
