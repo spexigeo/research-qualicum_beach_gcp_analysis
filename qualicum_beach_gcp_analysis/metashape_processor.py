@@ -732,6 +732,77 @@ def process_orthomosaic(
             logger.info(f"✓ Enabled markers (will be used): {enabled_markers}")
             logger.info(f"✓ GCP accuracy setting: {gcp_accuracy}m ({gcp_accuracy*1000:.1f}mm)")
             logger.info(f"✓ Scale bar accuracy: 0.001m (1mm) for very high weight")
+            
+            # CRITICAL: Verify and explicitly set marker accuracy after loading (redundant but safe)
+            logger.info("Verifying marker accuracy settings (redundant check for safety)")
+            for marker in chunk.markers:
+                if marker.reference.enabled:
+                    # Explicitly set accuracy again to ensure it's correct
+                    marker.reference.accuracy = Metashape.Vector([gcp_accuracy, gcp_accuracy, gcp_accuracy])
+                    try:
+                        marker.reference.scalebar_accuracy = 0.001  # 1mm
+                    except AttributeError:
+                        pass
+                    acc = marker.reference.accuracy
+                    logger.debug(f"  Verified marker {marker.label}: accuracy=({acc.x:.4f}, {acc.y:.4f}, {acc.z:.4f})m")
+            
+            # CRITICAL: Auto-detect markers on photos if they have coded targets
+            # This is essential - markers must be detected on photos to have projections
+            # Without projections, markers won't be used in bundle adjustment
+            logger.info("=" * 60)
+            logger.info("AUTO-DETECTING MARKERS ON PHOTOS")
+            logger.info("=" * 60)
+            logger.info("This step is CRITICAL: markers must be detected on photos to have projections")
+            logger.info("Without projections, markers won't be used in bundle adjustment")
+            
+            # Check if markers already have projections
+            markers_with_projections_before = sum(1 for m in chunk.markers if m.reference.enabled and len(m.projections) > 0)
+            logger.info(f"Markers with projections before detection: {markers_with_projections_before}/{enabled_markers}")
+            
+            if markers_with_projections_before < enabled_markers:
+                logger.info("Attempting to auto-detect markers on photos...")
+                try:
+                    # Try different target types - start with most common
+                    target_types_to_try = [
+                        Metashape.CircularTarget12bit,  # Most common coded target
+                        Metashape.CircularTarget,       # Circular target
+                        Metashape.CrossTarget           # Cross target
+                    ]
+                    
+                    markers_detected = False
+                    for target_type in target_types_to_try:
+                        try:
+                            logger.info(f"  Trying target type: {target_type}")
+                            chunk.detectMarkers(
+                                target_type=target_type,
+                                tolerance=50
+                            )
+                            markers_detected = True
+                            logger.info(f"  ✓ Marker detection completed with {target_type}")
+                            safe_save_document()
+                            break
+                        except (AttributeError, TypeError, RuntimeError) as e:
+                            logger.debug(f"  Target type {target_type} failed: {e}")
+                            continue
+                    
+                    if not markers_detected:
+                        logger.warning("  ⚠️  Auto-detection failed for all target types")
+                        logger.warning("  ⚠️  Markers may need to be manually linked to photos")
+                        logger.warning("  ⚠️  Without projections, GCPs won't be used in bundle adjustment")
+                    else:
+                        # Check projections after detection
+                        markers_with_projections_after = sum(1 for m in chunk.markers if m.reference.enabled and len(m.projections) > 0)
+                        logger.info(f"  ✓ Markers with projections after detection: {markers_with_projections_after}/{enabled_markers}")
+                        if markers_with_projections_after < enabled_markers:
+                            logger.warning(f"  ⚠️  Only {markers_with_projections_after}/{enabled_markers} markers have projections")
+                            logger.warning("  ⚠️  Some markers may need manual linking to photos")
+                except Exception as e:
+                    logger.warning(f"  ⚠️  Marker detection failed: {e}")
+                    logger.warning("  ⚠️  Markers may need to be manually linked to photos")
+                    logger.warning("  ⚠️  Without projections, GCPs won't be used in bundle adjustment")
+            else:
+                logger.info(f"✓ All {enabled_markers} markers already have projections - skipping auto-detection")
+            
             logger.info("=" * 60)
         elif len(chunk.markers) > 0:
             logger.info(f"Note: {len(chunk.markers)} markers found in project but use_gcps=False")
@@ -761,8 +832,21 @@ def process_orthomosaic(
         logger.info("Setting coordinate accuracy bounds on photos and markers")
         
         # Set Camera Reference Accuracy to 10m (assumes photos have initial coordinate data from drone GPS)
+        # Set both chunk-level and per-camera accuracy for maximum compatibility
         chunk.camera_location_accuracy = (10, 10, 10)  # (x, y, z) in meters
-        logger.info("  Camera location accuracy set to 10m (x, y, z)")
+        logger.info("  Camera location accuracy set to 10m (x, y, z) at chunk level")
+        
+        # Also set per-camera accuracy (more explicit, ensures each camera has correct accuracy)
+        cameras_with_accuracy = 0
+        for camera in chunk.cameras:
+            try:
+                camera.reference.accuracy = Metashape.Vector([10, 10, 10])  # 10m for X, Y, Z
+                cameras_with_accuracy += 1
+            except (AttributeError, TypeError):
+                # Some cameras might not support reference.accuracy
+                continue
+        if cameras_with_accuracy > 0:
+            logger.info(f"  ✓ Set per-camera accuracy to 10m for {cameras_with_accuracy}/{len(chunk.cameras)} cameras")
         
         # Set Marker (GCP) Accuracy - use gcp_accuracy parameter (default 0.005m = 5mm)
         # Lower values = higher weight in bundle adjustment
@@ -817,14 +901,75 @@ def process_orthomosaic(
         
         # Optimize Cameras to refine the initial alignment using the set reference accuracies
         # This should be done after alignment and accuracy settings, but before building depth maps
-        logger.info("Optimizing cameras for improved accuracy")
+        # CRITICAL: Use explicit parameters to ensure GCPs are included in optimization
+        logger.info("Optimizing cameras for improved accuracy (first pass)")
         logger.info("  Optimizing: f, cx, cy, k1, k2, k3, p1, p2, and coordinates")
         if use_gcps and len(chunk.markers) > 0:
             enabled_markers = sum(1 for m in chunk.markers if m.reference.enabled)
-            logger.info(f"  ✓ Using {enabled_markers} GCPs with accuracy {marker_accuracy}m in optimization")
-        chunk.optimizeCameras()
+            markers_with_projections = sum(1 for m in chunk.markers if m.reference.enabled and len(m.projections) > 0)
+            logger.info(f"  ✓ Using {enabled_markers} GCPs ({markers_with_projections} with projections) with accuracy {marker_accuracy}m")
+            if markers_with_projections < enabled_markers:
+                logger.warning(f"  ⚠️  WARNING: Only {markers_with_projections}/{enabled_markers} markers have projections!")
+                logger.warning(f"  ⚠️  Markers without projections won't be used in optimization")
+        
+        # First optimization pass with explicit parameters
+        try:
+            chunk.optimizeCameras(
+                fit_f=True,      # Focal length
+                fit_cx=True,     # Principal point X
+                fit_cy=True,     # Principal point Y
+                fit_b1=True,     # Asymmetric pixel size X
+                fit_b2=True,     # Asymmetric pixel size Y
+                fit_k1=True,     # Radial distortion k1
+                fit_k2=True,     # Radial distortion k2
+                fit_k3=True,     # Radial distortion k3
+                fit_k4=False,    # Radial distortion k4 (usually not needed)
+                fit_p1=True,     # Tangential distortion p1
+                fit_p2=True,     # Tangential distortion p2
+                adaptive_fitting=False,
+                tiepoint_covariance=False
+            )
+            logger.info("  ✓ First optimization pass complete")
+        except (TypeError, AttributeError) as e:
+            # Fallback to default optimization if explicit parameters not supported
+            logger.warning(f"  Explicit parameters not supported, using default optimization: {e}")
+            chunk.optimizeCameras()
+            logger.info("  ✓ First optimization pass complete (default parameters)")
+        
         safe_save_document()
-        logger.info("  ✓ Camera optimization complete")
+        
+        # Second optimization pass for better accuracy (as shown in snippet)
+        logger.info("Optimizing cameras for improved accuracy (second pass)")
+        logger.info("  Running second optimization pass for refined accuracy")
+        if use_gcps and len(chunk.markers) > 0:
+            markers_with_projections = sum(1 for m in chunk.markers if m.reference.enabled and len(m.projections) > 0)
+            logger.info(f"  ✓ Using {markers_with_projections} GCPs with projections in second pass")
+        
+        try:
+            chunk.optimizeCameras(
+                fit_f=True,
+                fit_cx=True,
+                fit_cy=True,
+                fit_b1=True,
+                fit_b2=True,
+                fit_k1=True,
+                fit_k2=True,
+                fit_k3=True,
+                fit_k4=False,
+                fit_p1=True,
+                fit_p2=True,
+                adaptive_fitting=False,
+                tiepoint_covariance=False
+            )
+            logger.info("  ✓ Second optimization pass complete")
+        except (TypeError, AttributeError) as e:
+            # Fallback to default optimization if explicit parameters not supported
+            logger.warning(f"  Explicit parameters not supported in second pass, using default: {e}")
+            chunk.optimizeCameras()
+            logger.info("  ✓ Second optimization pass complete (default parameters)")
+        
+        safe_save_document()
+        logger.info("  ✓ Camera optimization complete (both passes)")
         
         # Build depth maps (if not already built)
         if not status['depth_maps_built']:
