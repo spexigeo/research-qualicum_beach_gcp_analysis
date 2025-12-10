@@ -891,39 +891,39 @@ def compute_feature_matching_2d_error_arosics(
         reference_path_str = str(reference_path)
         
         # Use COREG for global shift detection
-        # Try COREG first (newer API), fallback to CoReg if needed
+        # AROSICS API may vary, so we try with minimal parameters first
         try:
+            # Try COREG with minimal parameters (positional args: im_tgt, im_ref)
             coreg = COREG(
-                ortho_path_str,
-                reference_path_str,
+                ortho_path_str,  # im_tgt (target image to be shifted)
+                reference_path_str,  # im_ref (reference image)
                 max_shift=max_spatial_error_meters if max_spatial_error_meters else 50.0,  # meters
                 path_out=None,  # Don't write output, just get shift
-                fmt_out='GTiff',
-                r_b4match=1,  # Use first band for matching
-                s_b4match=1,
-                tieP_filter_level=2,  # Filter tie points
-                outl_thres=2.0,  # Outlier threshold
-                min_reliability=0.3,  # Minimum reliability
                 progress=False  # Suppress progress output
             )
-        except TypeError:
-            # Fallback to CoReg with different parameter names
-            logger.debug("COREG failed, trying CoReg with different parameters...")
-            coreg = CoReg(
-                im_ref=reference_path_str,
-                im_tgt=ortho_path_str,
-                max_shift=max_spatial_error_meters if max_spatial_error_meters else 50.0,  # meters
-                resamp_alg_deshift='bilinear',  # Resampling for shift correction
-                resamp_alg_calc='bilinear',  # Resampling for calculating shifts
-                path_out=None,  # Don't write output, just get shift
-                fmt_out='GTiff',
-                r_b4match=1,  # Use first band for matching
-                s_b4match=1,
-                tieP_filter_level=2,  # Filter tie points
-                outl_thres=2.0,  # Outlier threshold
-                min_reliability=0.3,  # Minimum reliability
-                progress=False  # Suppress progress output
-            )
+        except (TypeError, ValueError) as e1:
+            # Fallback: try with keyword arguments
+            try:
+                logger.debug(f"COREG with positional args failed: {e1}, trying with keywords...")
+                coreg = COREG(
+                    im_tgt=ortho_path_str,
+                    im_ref=reference_path_str,
+                    max_shift=max_spatial_error_meters if max_spatial_error_meters else 50.0,
+                    path_out=None,
+                    progress=False
+                )
+            except (TypeError, ValueError) as e2:
+                # Final fallback: use CoReg with correct parameter names
+                logger.debug(f"COREG with keywords failed: {e2}, trying CoReg...")
+                coreg = CoReg(
+                    im_ref=reference_path_str,
+                    im_tgt=ortho_path_str,
+                    max_shift=max_spatial_error_meters if max_spatial_error_meters else 50.0,
+                    resamp_alg_deshift='bilinear',  # Resampling for shift correction
+                    resamp_alg_calc='bilinear',  # Resampling for calculating shifts
+                    path_out=None,
+                    progress=False
+                )
         
         # Calculate shift - AROSICS does this automatically on initialization
         # Get shift information
