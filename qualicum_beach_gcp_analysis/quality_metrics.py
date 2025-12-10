@@ -532,6 +532,286 @@ def calculate_structural_similarity(
     return float(similarity)
 
 
+def compute_feature_matching_2d_error_pyramid(
+    ortho_array: np.ndarray,
+    reference_array: np.ndarray,
+    method: str = 'orb',
+    pixel_resolution: Optional[float] = None,
+    log_file_path: Optional[Path] = None,
+    max_spatial_error_meters: float = 10.0,
+    use_tiles: bool = True,
+    tile_size: int = 2048,
+    use_gpu: bool = True
+) -> Dict:
+    """
+    Compute 2D error using pyramid/multi-scale feature matching.
+    
+    Starts at coarse resolution (1/16) and progressively refines at 1/8, 1/4, 1/2, and full resolution.
+    Uses matches from each level to constrain the search region at the next level.
+    
+    Args:
+        ortho_array: Orthomosaic array (grayscale or first band)
+        reference_array: Reference basemap array (grayscale or first band)
+        method: Feature matching method ('orb' or 'sift')
+        pixel_resolution: Pixel resolution in meters
+        log_file_path: Optional path to save detailed matching log
+        max_spatial_error_meters: Maximum expected spatial error in meters
+        use_tiles: Whether to process large images in tiles
+        tile_size: Size of tiles for processing
+        use_gpu: Whether to use GPU acceleration if available
+        
+    Returns:
+        Dictionary with 2D error metrics
+    """
+    # Convert to grayscale if needed
+    if len(ortho_array.shape) == 3:
+        ortho_gray = np.mean(ortho_array, axis=0) if ortho_array.shape[0] < ortho_array.shape[2] else np.mean(ortho_array, axis=2)
+    else:
+        ortho_gray = ortho_array
+    
+    if len(reference_array.shape) == 3:
+        ref_gray = np.mean(reference_array, axis=0) if reference_array.shape[0] < reference_array.shape[2] else np.mean(reference_array, axis=2)
+    else:
+        ref_gray = reference_array
+    
+    # Normalize to uint8
+    def normalize_to_uint8(arr):
+        arr_min, arr_max = arr.min(), arr.max()
+        if arr_max > arr_min:
+            normalized = ((arr - arr_min) / (arr_max - arr_min) * 255).astype(np.uint8)
+        else:
+            normalized = np.zeros_like(arr, dtype=np.uint8)
+        return normalized
+    
+    # Pyramid levels: [scale_factor, search_window_multiplier]
+    # Start coarse (1/16) and progressively refine
+    pyramid_levels = [
+        (16, 4.0),  # 1/16 scale, 4x search window
+        (8, 2.0),   # 1/8 scale, 2x search window
+        (4, 1.5),   # 1/4 scale, 1.5x search window
+        (2, 1.2),   # 1/2 scale, 1.2x search window
+        (1, 1.0),   # Full scale, 1x search window
+    ]
+    
+    # Calculate base search window
+    base_search_window = None
+    if pixel_resolution and max_spatial_error_meters:
+        base_search_window = int(np.ceil(max_spatial_error_meters / pixel_resolution))
+    
+    # Accumulated offset from previous levels
+    accumulated_offset_x = 0.0
+    accumulated_offset_y = 0.0
+    
+    # Setup log file
+    log_file = None
+    if log_file_path:
+        log_file_path = Path(log_file_path)
+        log_file_path.parent.mkdir(parents=True, exist_ok=True)
+        log_file = open(log_file_path, 'w', encoding='utf-8')
+        log_file.write(f"Pyramid Feature Matching Results ({method.upper()})\n")
+        log_file.write("=" * 60 + "\n\n")
+    
+    best_matches = None
+    best_confidence = 0.0
+    
+    if not CV2_AVAILABLE or method not in ['orb', 'sift']:
+        logger.warning("Pyramid matching requires OpenCV and 'orb' or 'sift' method")
+        return compute_feature_matching_2d_error(ortho_array, reference_array, method, pixel_resolution, log_file_path, max_spatial_error_meters, use_tiles, tile_size, use_gpu)
+    
+    # Process each pyramid level
+    for level_idx, (scale_factor, window_multiplier) in enumerate(pyramid_levels):
+        logger.info(f"Pyramid level {level_idx + 1}/{len(pyramid_levels)}: scale=1/{scale_factor}")
+        
+        # Downsample images for this level
+        if scale_factor > 1:
+            try:
+                from scipy.ndimage import zoom
+                scale = 1.0 / scale_factor
+                ortho_scaled = zoom(ortho_gray, scale, order=1)
+                ref_scaled = zoom(ref_gray, scale, order=1)
+            except ImportError:
+                # Fallback to simple downsampling using array slicing
+                logger.warning("scipy.ndimage.zoom not available, using simple downsampling")
+                scale = 1.0 / scale_factor
+                h, w = ortho_gray.shape
+                new_h, new_w = int(h * scale), int(w * scale)
+                # Simple downsampling by taking every Nth pixel
+                step = scale_factor
+                ortho_scaled = ortho_gray[::step, ::step][:new_h, :new_w]
+                h, w = ref_gray.shape
+                new_h, new_w = int(h * scale), int(w * scale)
+                ref_scaled = ref_gray[::step, ::step][:new_h, :new_w]
+        else:
+            ortho_scaled = ortho_gray
+            ref_scaled = ref_gray
+        
+        # Normalize
+        ortho_norm = normalize_to_uint8(ortho_scaled)
+        ref_norm = normalize_to_uint8(ref_scaled)
+        
+        # Calculate search window for this level
+        # At coarse levels, use larger window; refine at finer levels
+        if base_search_window:
+            level_search_window = int(base_search_window * window_multiplier / scale_factor)
+        else:
+            # Default: 10% of image size at this scale
+            level_search_window = int(max(ortho_norm.shape) * 0.1 * window_multiplier)
+        
+        # Adjust search window based on accumulated offset from previous levels
+        if accumulated_offset_x != 0 or accumulated_offset_y != 0:
+            # Expand search window to account for accumulated offset
+            offset_magnitude = np.sqrt(accumulated_offset_x**2 + accumulated_offset_y**2) / scale_factor
+            level_search_window = int(max(level_search_window, offset_magnitude * 1.5))
+            logger.info(f"  Adjusted search window to {level_search_window} pixels (accounting for accumulated offset)")
+        
+        # Detect features
+        if method == 'sift':
+            detector = cv2.SIFT_create(nfeatures=5000, contrastThreshold=0.01, edgeThreshold=20)
+        else:  # orb
+            detector = cv2.ORB_create(nfeatures=5000, scaleFactor=1.2, nlevels=10)
+        
+        kp1, des1 = detector.detectAndCompute(ortho_norm, None)
+        kp2, des2 = detector.detectAndCompute(ref_norm, None)
+        
+        if des1 is None or des2 is None or len(des1) == 0 or len(des2) == 0:
+            logger.warning(f"  No features detected at scale 1/{scale_factor}, skipping level")
+            continue
+        
+        logger.info(f"  Detected {len(kp1)} keypoints in ortho, {len(kp2)} in reference")
+        
+        # Match features with spatial constraints
+        good_matches = []
+        kp1_pts = np.array([kp.pt for kp in kp1])
+        kp2_pts = np.array([kp.pt for kp in kp2])
+        
+        if method == 'sift':
+            matcher = cv2.BFMatcher()
+        else:  # orb
+            matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
+        
+        # For each ortho keypoint, find nearby reference keypoints
+        for i, kp1_pt in enumerate(kp1_pts):
+            # Adjust for accumulated offset from previous levels
+            expected_ref_pt = kp1_pt + np.array([accumulated_offset_x / scale_factor, accumulated_offset_y / scale_factor])
+            
+            # Find reference keypoints within search window
+            distances = np.sqrt(np.sum((kp2_pts - expected_ref_pt)**2, axis=1))
+            nearby_indices = np.where(distances <= level_search_window)[0]
+            
+            if len(nearby_indices) > 0:
+                nearby_des2 = des2[nearby_indices]
+                matches = matcher.knnMatch(des1[i:i+1], nearby_des2, k=2)
+                
+                for match_list in matches:
+                    if len(match_list) >= 2:
+                        m, n = match_list[0], match_list[1]
+                        ratio = 0.75 if method == 'orb' else 0.85
+                        if m.distance < ratio * n.distance:
+                            new_match = cv2.DMatch(m.queryIdx, nearby_indices[m.trainIdx], m.distance)
+                            good_matches.append(new_match)
+                    elif len(match_list) == 1:
+                        m = match_list[0]
+                        new_match = cv2.DMatch(m.queryIdx, nearby_indices[m.trainIdx], m.distance)
+                        good_matches.append(new_match)
+        
+        if len(good_matches) < 4:
+            logger.warning(f"  Insufficient matches ({len(good_matches)}) at scale 1/{scale_factor}, skipping level")
+            continue
+        
+        # Sort by distance and take best matches
+        good_matches = sorted(good_matches, key=lambda x: x.distance)[:500]
+        
+        # Extract matched points
+        src_pts = np.float32([kp1[m.queryIdx].pt for m in good_matches])
+        dst_pts = np.float32([kp2[m.trainIdx].pt for m in good_matches])
+        
+        # Calculate offset at this scale
+        offsets = dst_pts - src_pts
+        mean_offset_x_scaled = float(np.mean(offsets[:, 0]))
+        mean_offset_y_scaled = float(np.mean(offsets[:, 1]))
+        
+        # Scale back to original resolution
+        mean_offset_x = mean_offset_x_scaled * scale_factor
+        mean_offset_y = mean_offset_y_scaled * scale_factor
+        
+        # Update accumulated offset
+        accumulated_offset_x += mean_offset_x
+        accumulated_offset_y += mean_offset_y
+        
+        # Calculate RMSE at this level
+        errors = offsets - np.array([mean_offset_x_scaled, mean_offset_y_scaled])
+        rmse_2d_scaled = float(np.sqrt(np.mean(np.sum(errors**2, axis=1))))
+        rmse_2d = rmse_2d_scaled * scale_factor
+        
+        # Confidence based on number of matches and consistency
+        match_confidence = min(1.0, len(good_matches) / 50.0)
+        std_offset = np.std(np.sqrt(np.sum(errors**2, axis=1)))
+        if std_offset > 0:
+            match_confidence *= (1.0 / (1.0 + std_offset / 10.0))
+        
+        logger.info(f"  Level {level_idx + 1} results: offset=({mean_offset_x:.2f}, {mean_offset_y:.2f}) px, "
+                   f"RMSE={rmse_2d:.2f} px, matches={len(good_matches)}, confidence={match_confidence:.3f}")
+        
+        if log_file:
+            log_file.write(f"Level {level_idx + 1} (scale 1/{scale_factor}):\n")
+            log_file.write(f"  Offset: ({mean_offset_x:.2f}, {mean_offset_y:.2f}) pixels\n")
+            log_file.write(f"  RMSE: {rmse_2d:.2f} pixels\n")
+            log_file.write(f"  Matches: {len(good_matches)}\n")
+            log_file.write(f"  Confidence: {match_confidence:.3f}\n")
+            log_file.write(f"  Accumulated offset: ({accumulated_offset_x:.2f}, {accumulated_offset_y:.2f}) pixels\n\n")
+        
+        # Keep best result (usually from finest level with good matches)
+        if match_confidence > best_confidence:
+            best_confidence = match_confidence
+            # Scale match pairs back to original resolution for best result
+            match_pairs = [(tuple(src_pts[i] * scale_factor), tuple(dst_pts[i] * scale_factor)) for i in range(len(good_matches))]
+            best_matches = {
+                'mean_offset_x': accumulated_offset_x,
+                'mean_offset_y': accumulated_offset_y,
+                'rmse_2d': rmse_2d,
+                'num_matches': len(good_matches),
+                'match_confidence': match_confidence,
+                'match_pairs': match_pairs,
+                'level': level_idx + 1,
+                'scale_factor': scale_factor
+            }
+    
+    # Close log file
+    if log_file:
+        log_file.close()
+        logger.info(f"Pyramid matching log saved to: {log_file_path}")
+    
+    # Build result dictionary
+    errors_2d = {
+        'method': f'{method}_pyramid',
+        'mean_offset_x': None,
+        'mean_offset_y': None,
+        'rmse_2d': None,
+        'num_matches': 0,
+        'match_confidence': 0.0,
+        'match_pairs': [],
+        'mean_offset_x_meters': None,
+        'mean_offset_y_meters': None,
+        'rmse_2d_meters': None
+    }
+    
+    if best_matches:
+        errors_2d.update(best_matches)
+        
+        # Convert to meters if pixel resolution provided
+        if pixel_resolution:
+            errors_2d['mean_offset_x_meters'] = best_matches['mean_offset_x'] * pixel_resolution
+            errors_2d['mean_offset_y_meters'] = best_matches['mean_offset_y'] * pixel_resolution
+            errors_2d['rmse_2d_meters'] = best_matches['rmse_2d'] * pixel_resolution
+        
+        logger.info(f"Pyramid matching complete: final offset=({best_matches['mean_offset_x']:.2f}, {best_matches['mean_offset_y']:.2f}) px, "
+                   f"RMSE={best_matches['rmse_2d']:.2f} px, confidence={best_matches['match_confidence']:.3f}")
+    else:
+        logger.warning("Pyramid matching failed at all levels")
+    
+    return errors_2d
+
+
 def compute_feature_matching_2d_error(
     ortho_array: np.ndarray,
     reference_array: np.ndarray,
@@ -541,7 +821,8 @@ def compute_feature_matching_2d_error(
     max_spatial_error_meters: float = 10.0,
     use_tiles: bool = True,
     tile_size: int = 2048,
-    use_gpu: bool = True
+    use_gpu: bool = True,
+    use_pyramid: bool = False
 ) -> Dict:
     """
     Compute 2D error measures using feature matching between orthomosaic and reference.
@@ -559,6 +840,8 @@ def compute_feature_matching_2d_error(
         use_tiles: Whether to process large images in tiles (default: True)
         tile_size: Size of tiles for processing (default: 2048 pixels)
         use_gpu: Whether to use GPU acceleration if available (default: True)
+        use_pyramid: Whether to use pyramid/multi-scale matching (default: False)
+                      Use True for large initial misalignments
         
     Returns:
         Dictionary with 2D error metrics including:
@@ -567,6 +850,12 @@ def compute_feature_matching_2d_error(
         - num_matches: Number of matched features
         - match_confidence: Confidence score
     """
+    # Use pyramid matching if requested
+    if use_pyramid and method in ['orb', 'sift']:
+        return compute_feature_matching_2d_error_pyramid(
+            ortho_array, reference_array, method, pixel_resolution,
+            log_file_path, max_spatial_error_meters, use_tiles, tile_size, use_gpu
+        )
     # Convert to grayscale if needed
     if len(ortho_array.shape) == 3:
         ortho_gray = np.mean(ortho_array, axis=0) if ortho_array.shape[0] < ortho_array.shape[2] else np.mean(ortho_array, axis=2)
@@ -1222,8 +1511,12 @@ def compare_orthomosaic_to_basemap(
                 log_file_path = log_dir / f"feature_matching_{Path(ortho_path).stem}_{Path(basemap_path).stem}.log"
             
             # Use specified method (default: ORB only)
+            # Try pyramid matching first for large misalignments, fallback to regular matching
             if feature_matching_method.lower() == 'orb' and CV2_AVAILABLE:
+                errors_2d = None
+                # First try pyramid matching (handles large misalignments better)
                 try:
+                    logger.info("Attempting pyramid/multi-scale ORB matching...")
                     errors_2d = compute_feature_matching_2d_error(
                         ortho_band, ref_band, 
                         method='orb',
@@ -1232,12 +1525,37 @@ def compare_orthomosaic_to_basemap(
                         max_spatial_error_meters=10.0,  # 10m max error constraint
                         use_tiles=True,  # Enable tiled processing for large images
                         tile_size=2048,  # Tile size for processing
-                        use_gpu=True  # Use GPU if available
+                        use_gpu=True,  # Use GPU if available
+                        use_pyramid=True  # Use pyramid matching for large misalignments
                     )
+                    if errors_2d and errors_2d.get('num_matches', 0) > 0:
+                        logger.info(f"Pyramid matching succeeded: {errors_2d.get('num_matches', 0)} matches")
                 except Exception as e:
-                    logger.warning(f"ORB feature matching failed: {e}")
+                    logger.warning(f"Pyramid ORB matching failed: {e}")
+                    errors_2d = None
+                
+                # Fallback to regular matching if pyramid failed
+                if not errors_2d or errors_2d.get('num_matches', 0) < 4:
+                    try:
+                        logger.info("Falling back to regular ORB matching...")
+                        errors_2d = compute_feature_matching_2d_error(
+                            ortho_band, ref_band, 
+                            method='orb',
+                            pixel_resolution=pixel_resolution,
+                            log_file_path=log_file_path,
+                            max_spatial_error_meters=10.0,  # 10m max error constraint
+                            use_tiles=True,  # Enable tiled processing for large images
+                            tile_size=2048,  # Tile size for processing
+                            use_gpu=True,  # Use GPU if available
+                            use_pyramid=False  # Regular matching
+                        )
+                    except Exception as e:
+                        logger.warning(f"Regular ORB feature matching failed: {e}")
             elif feature_matching_method.lower() == 'sift' and CV2_AVAILABLE:
+                errors_2d = None
+                # First try pyramid matching
                 try:
+                    logger.info("Attempting pyramid/multi-scale SIFT matching...")
                     errors_2d = compute_feature_matching_2d_error(
                         ortho_band, ref_band, 
                         method='sift',
@@ -1246,10 +1564,32 @@ def compare_orthomosaic_to_basemap(
                         max_spatial_error_meters=10.0,  # 10m max error constraint
                         use_tiles=True,  # Enable tiled processing for large images
                         tile_size=2048,  # Tile size for processing
-                        use_gpu=True  # Use GPU if available
+                        use_gpu=True,  # Use GPU if available
+                        use_pyramid=True  # Use pyramid matching
                     )
+                    if errors_2d and errors_2d.get('num_matches', 0) > 0:
+                        logger.info(f"Pyramid matching succeeded: {errors_2d.get('num_matches', 0)} matches")
                 except Exception as e:
-                    logger.warning(f"SIFT feature matching failed: {e}")
+                    logger.warning(f"Pyramid SIFT matching failed: {e}")
+                    errors_2d = None
+                
+                # Fallback to regular matching if pyramid failed
+                if not errors_2d or errors_2d.get('num_matches', 0) < 4:
+                    try:
+                        logger.info("Falling back to regular SIFT matching...")
+                        errors_2d = compute_feature_matching_2d_error(
+                            ortho_band, ref_band, 
+                            method='sift',
+                            pixel_resolution=pixel_resolution,
+                            log_file_path=log_file_path,
+                            max_spatial_error_meters=10.0,  # 10m max error constraint
+                            use_tiles=True,  # Enable tiled processing for large images
+                            tile_size=2048,  # Tile size for processing
+                            use_gpu=True,  # Use GPU if available
+                            use_pyramid=False  # Regular matching
+                        )
+                    except Exception as e:
+                        logger.warning(f"Regular SIFT feature matching failed: {e}")
             else:
                 # Fallback: try available methods
                 methods_to_try = []
