@@ -1892,10 +1892,15 @@ def compare_orthomosaic_to_basemap_memory_efficient(
         best_errors_2d = None
         best_confidence = 0.0
         
+        # Get pixel resolution from basemap transform
+        with rasterio.open(basemap_path) as ref_src:
+            ref_transform_obj = ref_src.transform
+            pixel_res_from_transform = abs(ref_transform_obj[0]) if ref_transform_obj else None
+        
         for method in methods_to_try:
             try:
-                # Get pixel resolution for spatial constraints
-                pixel_res = abs(ref_transform[0]) if pixel_resolution is None else pixel_resolution
+                # Get pixel resolution for spatial constraints (use transform if available)
+                pixel_res = pixel_res_from_transform
                 errors = compute_feature_matching_2d_error(
                     ortho_sample, ref_sample, 
                     method=method,
